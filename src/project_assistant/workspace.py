@@ -8,7 +8,7 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
-from .config import CONFIG_NAME, ProjectConfig, init_project
+from .config import CONFIG_NAME, ProjectConfig, SourceRoot, init_project
 from .security import private_dir, private_file, validate_source_root
 
 
@@ -156,6 +156,61 @@ class WorkspaceRegistry:
             if project.id == project_id:
                 return project
         raise KeyError(f"Unknown project: {project_id}")
+
+
+    def rename(self, project_id: str, name: str) -> RegisteredProject:
+        """Rename a project display name without moving its repository."""
+        name = name.strip()
+        if not name:
+            raise ValueError("Project name cannot be empty")
+        project = self.get(project_id)
+        path = Path(project.path)
+        config = ProjectConfig.load(path)
+        config.name = name
+        config.save(path)
+        updated = self._load_registered(path, project.kind)
+        if updated is None:  # pragma: no cover - defensive
+            raise RuntimeError(f"Failed to reload project after rename: {path}")
+        return updated
+
+    def convert_imported_to_source(
+        self,
+        project_id: str,
+        target_project_id: str,
+        source_name: str | None = None,
+    ) -> tuple[RegisteredProject, SourceRoot]:
+        """Turn a mistakenly imported project into a source of another project.
+
+        This is metadata-only: the imported repository is not copied, moved or
+        deleted. Existing .assistant metadata is deliberately left in place so
+        correction never destroys conversation/project history.
+        """
+        project = self.get(project_id)
+        if project.kind != "imported":
+            raise ValueError("Only imported projects can be converted to source repositories")
+        target = self.get(target_project_id)
+        if target.id == project.id:
+            raise ValueError("Choose a different target project")
+
+        source_path = validate_source_root(Path(project.path))
+        target_path = Path(target.path)
+        config = ProjectConfig.load(target_path)
+        resolved = config.resolved_sources(target_path)
+        if any(Path(item.path).resolve() == source_path.resolve() for item in resolved):
+            raise ValueError(f"Repository is already a source of {target.name}")
+
+        name = (source_name or project.name or source_path.name).strip()
+        if not name:
+            name = source_path.name
+        if any(item.name == name for item in config.source_roots):
+            raise ValueError(f"Source name already exists in {target.name}: {name}")
+
+        source = SourceRoot(name=name, path=str(source_path))
+        config.source_roots.append(source)
+        config.save(target_path)
+        self.remove(project.id)
+        updated_target = self.get(target.id)
+        return updated_target, source
 
     def remove(self, project_id: str) -> None:
         """Forget an imported project. Managed repos are never deleted here."""

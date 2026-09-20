@@ -8,6 +8,12 @@ export type Project = {
   sources: Source[];
 };
 
+export type ProjectConversion = {
+  removed_project_id: string;
+  target_project: Project;
+  source: Source;
+};
+
 export type ConversationSummary = {
   id: string;
   title: string;

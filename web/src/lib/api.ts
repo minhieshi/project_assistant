@@ -3,6 +3,7 @@ import type {
   ConversationDetail,
   ConversationSummary,
   Project,
+  ProjectConversion,
   Proposal,
   AppStatus,
 } from "./types";
@@ -33,6 +34,9 @@ export const api = {
   registerProject: (path: string) => request<Project>("/projects/register", { method: "POST", body: JSON.stringify({ path }) }),
   createProject: (name: string) => request<Project>("/projects", { method: "POST", body: JSON.stringify({ name }) }),
   getProject: (id: string) => request<Project>(`/projects/${id}`),
+  renameProject: (id: string, name: string) => request<Project>(`/projects/${id}`, { method: "PATCH", body: JSON.stringify({ name }) }),
+  forgetProject: (id: string) => request<{ ok: boolean }>(`/projects/${id}`, { method: "DELETE" }),
+  convertProjectToSource: (id: string, targetProjectId: string, sourceName?: string) => request<ProjectConversion>(`/projects/${id}/convert-to-source`, { method: "POST", body: JSON.stringify({ target_project_id: targetProjectId, source_name: sourceName || null }) }),
   addSource: (id: string, path: string, name?: string) => request<Project>(`/projects/${id}/sources`, { method: "POST", body: JSON.stringify({ path, name: name || null }) }),
   removeSource: (id: string, name: string) => request<Project>(`/projects/${id}/sources/${encodeURIComponent(name)}`, { method: "DELETE" }),
   indexProject: (id: string) => request<Record<string, number>>(`/projects/${id}/index`, { method: "POST" }),

@@ -1,5 +1,26 @@
 # Changelog
 
+## v0.6.1
+
+- Added a Portkey/Amazon Titan Text Embeddings V2 adapter for `@bedrock-au/amazon.titan-embed-text-v2:0`.
+- Titan embedding requests now send exactly one raw string per Portkey `/embeddings` call rather than using LangChain batching/pre-tokenisation.
+- Omit optional Titan fields by default, allowing Bedrock defaults of 1024 dimensions and normalisation.
+- Generic non-Titan `OpenAIEmbeddings` now sets `check_embedding_ctx_length=False` so raw strings are preserved for non-OpenAI providers.
+- Added `project-assistant embedding-test` to verify the configured route before indexing real source code.
+- Added regression tests asserting the exact Titan request shape, including Portkey provider-prefixed model names.
+- Backend/core suite: 25 passing tests.
+
+## v0.6.0
+
+- Added project rename support without changing repository identity or path.
+- Added safe **Convert imported project to source** workflow for correcting a repo imported as a project by mistake.
+- Conversion adds the existing repo to a selected target project's source list, then removes only the imported-project catalogue entry. No repository files are moved or deleted.
+- Added **Forget as project** for imported repos and source-removal controls in the web UI.
+- Clarified create/import UI wording so reference code repos are directed to Project → Sources.
+- Added CLI commands `project-rename`, `project-convert-to-source` and `project-forget`.
+- Added regression coverage for restart persistence, failed conversion safety, conversion without repo movement, and rename identity preservation.
+- Backend/core suite: 23 passing tests.
+
 ## v0.5.0
 
 - Replaced path-first project creation with a managed-project model: creating a project now creates a local Git repo under `~/.project-assistant/projects` (configurable).

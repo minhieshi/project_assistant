@@ -16,6 +16,15 @@ class ProjectImportRequest(BaseModel):
     name: str | None = Field(default=None, max_length=120)
 
 
+class ProjectUpdateRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+
+
+class ProjectConvertToSourceRequest(BaseModel):
+    target_project_id: str = Field(min_length=1, max_length=64)
+    source_name: str | None = Field(default=None, max_length=120)
+
+
 class SourceRequest(BaseModel):
     path: str
     name: str | None = None

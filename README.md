@@ -1,4 +1,4 @@
-# Local Project Assistant — v0.5
+# Local Project Assistant — v0.6.1
 
 A local-first engineering workbench for source-heavy enterprise work: persistent Markdown conversations, multi-repo RAG, deterministic knowledge graph, context compilation and two-stage approval-gated code changes.
 
@@ -161,7 +161,7 @@ Code chunks retain repo/path/language/symbol/line metadata. Git-backed repos use
 Backend:
 
 ```bash
-cd project-assistant-v0.5
+cd project-assistant-v0.6.1
 python -m venv .venv
 source .venv/bin/activate
 pip install -e .
@@ -173,7 +173,7 @@ Configure the approved Portkey route before indexing/chat. Project listing and c
 export PORTKEY_BASE_URL='https://your-approved-portkey-endpoint/v1'
 export PORTKEY_API_KEY='...'
 export PORTKEY_CHAT_MODEL='gpt-5.6'
-export PORTKEY_EMBEDDING_MODEL='your-approved-embedding-model'
+export PORTKEY_EMBEDDING_MODEL='@bedrock-au/amazon.titan-embed-text-v2:0'
 ```
 
 Optional enterprise routing:
@@ -185,6 +185,24 @@ export PORTKEY_CHAT_CONFIG_ID='...'
 export PORTKEY_EMBEDDING_CONFIG_ID='...'
 export PORTKEY_EXTRA_HEADERS_JSON='{}'
 ```
+
+### Titan Text Embeddings V2 through Portkey
+
+For `@bedrock-au/amazon.titan-embed-text-v2:0`, v0.6.1 uses a provider-specific adapter rather than `langchain_openai.OpenAIEmbeddings`. It sends one raw string per `/embeddings` request and deliberately omits optional `dimensions`, `normalize` and `encoding_format` fields. This avoids LangChain pre-tokenisation/batching shapes that can be rejected by Bedrock. Titan V2 therefore uses its defaults (1024 dimensions and normalisation enabled).
+
+Before indexing a repository, test the route with a fixed non-sensitive string:
+
+```bash
+project-assistant embedding-test
+```
+
+A healthy Titan V2 route should print approximately:
+
+```text
+OK model=@bedrock-au/amazon.titan-embed-text-v2:0 dimensions=1024
+```
+
+Only after that succeeds should you run the initial repository index.
 
 Frontend:
 
@@ -344,7 +362,7 @@ A newly created managed project is its own local Git repo:
 PYTHONPATH=src python -m unittest discover -s tests -v
 ```
 
-v0.5 currently has 20 backend/core tests covering the two-stage approval gate, patch tampering, HEAD changes, secret detection, path traversal, API authentication, retrieval and graph behaviour.
+v0.6.1 currently has 25 backend/core tests covering the two-stage approval gate, patch tampering, HEAD changes, secret detection, path traversal, API authentication, retrieval and graph behaviour.
 
 After `npm install`:
 
@@ -362,3 +380,19 @@ npm run build
 - No filesystem watcher or reranker yet.
 - The knowledge graph is deterministic/structural rather than LLM-generated.
 - This remains a single-user local tool rather than a network service.
+
+## Correcting project mistakes
+
+Projects are editable. In the **Project** tab you can rename any project, remove source repositories, and safely correct an existing repo that was imported as a standalone project by mistake.
+
+For an imported project, choose **Convert to source repository**, select the real target project and optionally change the source name. The conversion is metadata-only: Project Assistant adds the existing repo path to the target project's source list and removes it from the imported-project catalogue. It does **not** copy, move, delete or modify the Git repository. Existing `.assistant` metadata is deliberately left in place so correction cannot destroy previous conversations.
+
+You can also choose **Forget as project** for an imported repo. This removes only the Project Assistant catalogue entry; it never deletes the repository.
+
+CLI equivalents:
+
+```bash
+project-assistant project-rename <project-id> 'New name'
+project-assistant project-convert-to-source <mistaken-project-id> <target-project-id> --name shared-source
+project-assistant project-forget <imported-project-id>
+```

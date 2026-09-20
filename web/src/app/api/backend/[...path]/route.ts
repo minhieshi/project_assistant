@@ -102,4 +102,5 @@ async function proxy(request: NextRequest, context: Context) {
 
 export const GET = proxy;
 export const POST = proxy;
+export const PATCH = proxy;
 export const DELETE = proxy;

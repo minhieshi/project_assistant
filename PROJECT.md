@@ -37,7 +37,7 @@ Restore the high-value parts of the enterprise ChatGPT browser experience locall
 
 ## Current work
 
-v0.5 implements persistent Git-backed project discovery/import and fail-closed Portkey configuration, while retaining the v0.4 security hardening.
+v0.6 adds editable project metadata and a safe imported-project-to-source correction workflow, while retaining persistent Git-backed discovery, fail-closed Portkey configuration and the v0.4 security hardening.
 
 ## Known issues
 
@@ -45,3 +45,17 @@ v0.5 implements persistent Git-backed project discovery/import and fail-closed P
 - Secret scanning is intentionally conservative and should complement, not replace, enterprise DLP controls.
 - Git indexing excludes brand-new untracked files.
 - No filesystem watcher or reranker yet.
+
+
+## v0.6 project correction
+
+- Projects can be renamed without moving their repository or changing project identity.
+- Imported projects can be converted into source repos of another project without copying, moving or deleting the repo.
+- Imported projects can be forgotten safely; managed projects remain disk-discovered and cannot be removed via the catalogue.
+- Source repositories can be removed from a project in the web UI.
+- Import UI now distinguishes a project repo from a reference/source repo.
+
+
+## v0.6.1 Titan embedding compatibility
+
+The configured enterprise embedding route is `@bedrock-au/amazon.titan-embed-text-v2:0`. Titan V2 uses a dedicated Portkey adapter that sends one raw string per embedding request and leaves optional dimensions/normalisation fields unset so Bedrock defaults apply. A fixed-string `project-assistant embedding-test` command is available before indexing real source code.

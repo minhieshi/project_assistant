@@ -39,6 +39,9 @@ export default function Home() {
   const [newConversationTitle, setNewConversationTitle] = useState("");
   const [sourcePath, setSourcePath] = useState("");
   const [sourceName, setSourceName] = useState("");
+  const [projectRename, setProjectRename] = useState("");
+  const [convertTargetId, setConvertTargetId] = useState("");
+  const [convertSourceName, setConvertSourceName] = useState("");
   const [contextQuery, setContextQuery] = useState("");
   const bottomRef = useRef<HTMLDivElement>(null);
 
@@ -47,7 +50,7 @@ export default function Home() {
   const loadProjects = useCallback(async () => {
     const next = await api.projects();
     setProjects(next);
-    setProjectId((current) => current || next[0]?.id || "");
+    setProjectId((current) => current && next.some((project) => project.id === current) ? current : next[0]?.id || "");
   }, []);
 
   const loadConversations = useCallback(async (pid: string) => {
@@ -69,13 +72,17 @@ export default function Home() {
   useEffect(() => {
     setConversation(null);
     setContext(null);
+    const selected = projects.find((project) => project.id === projectId);
+    setProjectRename(selected?.name ?? "");
+    setConvertSourceName(selected?.name ?? "");
+    setConvertTargetId((current) => current && current !== projectId ? current : projects.find((project) => project.id !== projectId)?.id ?? "");
     if (!projectId) {
       setConversations([]);
       setConversationId("");
       return;
     }
     loadConversations(projectId).catch((e) => setError(String(e)));
-  }, [projectId, loadConversations]);
+  }, [projectId, loadConversations, projects]);
 
   useEffect(() => {
     setStreamingText("");
@@ -165,6 +172,56 @@ export default function Home() {
     } catch (e) { setError(String(e)); } finally { setBusy(false); }
   }
 
+  async function removeSource(name: string) {
+    if (!projectId) return;
+    if (!window.confirm(`Remove ${name} from this project's source repositories?\n\nThe repository itself will not be changed or deleted.`)) return;
+    setBusy(true); setError("");
+    try {
+      const updated = await api.removeSource(projectId, name);
+      setProjects((items) => items.map((item) => item.id === updated.id ? updated : item));
+    } catch (e) { setError(String(e)); } finally { setBusy(false); }
+  }
+
+  async function renameProject(event: FormEvent) {
+    event.preventDefault();
+    if (!projectId || !projectRename.trim()) return;
+    setBusy(true); setError("");
+    try {
+      const updated = await api.renameProject(projectId, projectRename.trim());
+      setProjects((items) => items.map((item) => item.id === updated.id ? updated : item));
+    } catch (e) { setError(String(e)); } finally { setBusy(false); }
+  }
+
+  async function convertProjectToSource(event: FormEvent) {
+    event.preventDefault();
+    if (!currentProject || currentProject.kind !== "imported" || !convertTargetId) return;
+    const target = projects.find((project) => project.id === convertTargetId);
+    if (!target) return;
+    const confirmed = window.confirm(`Convert ${currentProject.name} into a source repository for ${target.name}?\n\nThe Git repository will not be moved or deleted. It will stop appearing as a standalone project.`);
+    if (!confirmed) return;
+    setBusy(true); setError("");
+    try {
+      const result = await api.convertProjectToSource(currentProject.id, target.id, convertSourceName.trim() || undefined);
+      await loadProjects();
+      setProjectId(result.target_project.id);
+      setConversationId("");
+      setTab("project");
+    } catch (e) { setError(String(e)); } finally { setBusy(false); }
+  }
+
+  async function forgetImportedProject() {
+    if (!currentProject || currentProject.kind !== "imported") return;
+    const confirmed = window.confirm(`Forget ${currentProject.name} as a Project Assistant project?\n\nThis does not delete or move the Git repository.`);
+    if (!confirmed) return;
+    setBusy(true); setError("");
+    try {
+      await api.forgetProject(currentProject.id);
+      setProjectId("");
+      setConversationId("");
+      await loadProjects();
+    } catch (e) { setError(String(e)); } finally { setBusy(false); }
+  }
+
   async function indexProject() {
     if (!projectId) return;
     setBusy(true); setError("");
@@ -195,7 +252,7 @@ export default function Home() {
   return (
     <div className="app-shell">
       <aside className="sidebar">
-        <div className="brand">Project Assistant <span className="small">v0.5</span></div>
+        <div className="brand">Project Assistant <span className="small">v0.6.1</span></div>
         {appStatus && <div className="notice" style={{ marginBottom: 12 }}>Projects: {appStatus.projects_root}<br />Portkey: {appStatus.portkey.base_url_configured ? "URL configured" : "URL missing"}</div>}
 
         <div className="section-title">Projects</div>
@@ -215,7 +272,8 @@ export default function Home() {
         <form className="form-stack" onSubmit={importProject} style={{ marginTop: 10 }}>
           <input className="input" value={importPath} onChange={(e) => setImportPath(e.target.value)} placeholder="/absolute/path/to/existing/git/repo" />
           <input className="input" value={importName} onChange={(e) => setImportName(e.target.value)} placeholder="Optional project name" />
-          <button className="btn" disabled={busy || !importPath.trim()}>Import Git repo</button>
+          <button className="btn" disabled={busy || !importPath.trim()}>Import existing repo as project</button>
+          <div className="small">Use this only when the repo itself should own project conversations/settings. If it is reference source code for another project, add it under that project's Sources instead.</div>
         </form>
 
         {projectId && <>
@@ -267,7 +325,27 @@ export default function Home() {
             </div>}
           </>
         ) : (
-          <ProjectPanel project={currentProject} busy={busy} sourcePath={sourcePath} sourceName={sourceName} setSourcePath={setSourcePath} setSourceName={setSourceName} addSource={addSource} indexProject={indexProject} />
+          <ProjectPanel
+            project={currentProject}
+            projects={projects}
+            busy={busy}
+            sourcePath={sourcePath}
+            sourceName={sourceName}
+            setSourcePath={setSourcePath}
+            setSourceName={setSourceName}
+            addSource={addSource}
+            removeSource={removeSource}
+            indexProject={indexProject}
+            projectRename={projectRename}
+            setProjectRename={setProjectRename}
+            renameProject={renameProject}
+            convertTargetId={convertTargetId}
+            setConvertTargetId={setConvertTargetId}
+            convertSourceName={convertSourceName}
+            setConvertSourceName={setConvertSourceName}
+            convertProjectToSource={convertProjectToSource}
+            forgetImportedProject={forgetImportedProject}
+          />
         )}
       </main>
 
@@ -298,23 +376,68 @@ function Message({ entry }: { entry: ConversationEntry }) {
 
 function ProjectPanel(props: {
   project: Project | null;
+  projects: Project[];
   busy: boolean;
   sourcePath: string;
   sourceName: string;
   setSourcePath: (value: string) => void;
   setSourceName: (value: string) => void;
   addSource: (event: FormEvent) => void;
+  removeSource: (name: string) => void;
   indexProject: () => void;
+  projectRename: string;
+  setProjectRename: (value: string) => void;
+  renameProject: (event: FormEvent) => void;
+  convertTargetId: string;
+  setConvertTargetId: (value: string) => void;
+  convertSourceName: string;
+  setConvertSourceName: (value: string) => void;
+  convertProjectToSource: (event: FormEvent) => void;
+  forgetImportedProject: () => void;
 }) {
   const { project } = props;
   if (!project) return <div className="empty">Select a project.</div>;
+  const conversionTargets = props.projects.filter((item) => item.id !== project.id);
   return <section className="chat-scroll">
     <h2 style={{ marginTop: 0 }}>Project</h2>
-    <div className="card"><h3>Project repository</h3><div className="small">{project.kind === "managed" ? "Managed local Git repo" : "Imported existing Git repo"}</div><div className="path" style={{ marginTop: 6 }}>{project.path}</div></div>
+    <div className="card">
+      <h3>Project repository</h3>
+      <div className="small">{project.kind === "managed" ? "Managed local Git repo" : "Imported existing Git repo"}</div>
+      <div className="path" style={{ marginTop: 6 }}>{project.path}</div>
+    </div>
+
+    <div className="card" style={{ marginTop: 12 }}>
+      <h3>Project settings</h3>
+      <form className="row wrap" onSubmit={props.renameProject}>
+        <input className="input grow" value={props.projectRename} onChange={(e) => props.setProjectRename(e.target.value)} placeholder="Project name" />
+        <button className="btn" disabled={props.busy || !props.projectRename.trim() || props.projectRename.trim() === project.name}>Rename</button>
+      </form>
+
+      {project.kind === "imported" && <div className="correction-box">
+        <h3>Mistakenly imported this as a project?</h3>
+        <div className="small">Convert it into a source repository for another project. The Git repo is not copied, moved or deleted; it simply stops appearing as a standalone project.</div>
+        {conversionTargets.length > 0 ? <form className="form-stack" onSubmit={props.convertProjectToSource} style={{ marginTop: 10 }}>
+          <select className="input" value={props.convertTargetId} onChange={(e) => props.setConvertTargetId(e.target.value)}>
+            <option value="">Choose target project…</option>
+            {conversionTargets.map((item) => <option value={item.id} key={item.id}>{item.name} · {item.kind}</option>)}
+          </select>
+          <input className="input" value={props.convertSourceName} onChange={(e) => props.setConvertSourceName(e.target.value)} placeholder="Source name" />
+          <button className="btn primary" disabled={props.busy || !props.convertTargetId}>Convert to source repository</button>
+        </form> : <div className="notice">Create or import the real target project first, then return here to convert this repo into one of its sources.</div>}
+        <div className="row" style={{ marginTop: 10 }}>
+          <button className="btn danger" type="button" disabled={props.busy} onClick={props.forgetImportedProject}>Forget as project</button>
+          <span className="small">This only removes the Project Assistant catalogue entry.</span>
+        </div>
+      </div>}
+    </div>
+
     <div className="row" style={{ justifyContent: "space-between", marginTop: 24 }}><h3>Source repositories</h3><button className="btn" onClick={props.indexProject} disabled={props.busy}>Reindex changed files</button></div>
     <div className="source-list">
       {project.sources.length === 0 && <div className="notice">No external source repos registered yet.</div>}
-      {project.sources.map((source) => <div className="source-row" key={source.name}><div className="source-name">{source.name}</div><div className="path">{source.path}</div></div>)}
+      {project.sources.map((source) => <div className="source-row row" style={{ justifyContent: "space-between" }} key={source.name}>
+        <div style={{ minWidth: 0 }}><div className="source-name">{source.name}</div><div className="path">{source.path}</div></div>
+        <button className="btn danger" type="button" disabled={props.busy} onClick={() => props.removeSource(source.name)}>Remove</button>
+      </div>)}
     </div>
     <form onSubmit={props.addSource} className="form-stack" style={{ marginTop: 18, maxWidth: 600 }}>
       <input className="input" value={props.sourcePath} onChange={(e) => props.setSourcePath(e.target.value)} placeholder="/absolute/path/to/repo" />

@@ -27,6 +27,18 @@ def main() -> None:
     p_project_import.add_argument("path")
     p_project_import.add_argument("--name")
 
+    p_project_rename = sub.add_parser("project-rename", help="Rename a discovered project")
+    p_project_rename.add_argument("project_id")
+    p_project_rename.add_argument("name")
+
+    p_project_convert = sub.add_parser("project-convert-to-source", help="Convert an imported project into a source of another project")
+    p_project_convert.add_argument("project_id")
+    p_project_convert.add_argument("target_project_id")
+    p_project_convert.add_argument("--name")
+
+    p_project_forget = sub.add_parser("project-forget", help="Forget an imported project without deleting its repository")
+    p_project_forget.add_argument("project_id")
+
     p_init = sub.add_parser("init")
     p_init.add_argument("--name", required=True)
 
@@ -35,6 +47,7 @@ def main() -> None:
     p_source.add_argument("--name")
 
     sub.add_parser("index")
+    sub.add_parser("embedding-test", help="Test the configured embedding route with a fixed non-sensitive string")
 
     p_new = sub.add_parser("chat-new")
     p_new.add_argument("title")
@@ -94,7 +107,33 @@ def main() -> None:
         print(project.path)
         return
 
+    if args.command == "project-rename":
+        project = WorkspaceRegistry().rename(args.project_id, args.name)
+        print(f"{project.id}\t{project.name}\t{project.path}")
+        return
+
+    if args.command == "project-convert-to-source":
+        target, source = WorkspaceRegistry().convert_imported_to_source(args.project_id, args.target_project_id, args.name)
+        print(f"Converted to source {source.name}: {source.path}")
+        print(f"Target project: {target.id} {target.name}")
+        return
+
+    if args.command == "project-forget":
+        WorkspaceRegistry().remove(args.project_id)
+        print(f"Forgot imported project {args.project_id}")
+        return
+
     project_dir = _project(args.project)
+
+    if args.command == "embedding-test":
+        from .config import PortkeySettings
+        from .portkey import get_embedding_function
+
+        settings = PortkeySettings.from_env()
+        embeddings = get_embedding_function(settings)
+        vector = embeddings.embed_query("Project Assistant embedding connectivity test")
+        print(f"OK model={settings.embedding_model} dimensions={len(vector)}")
+        return
 
     if args.command == "init":
         config = init_project(project_dir, args.name)

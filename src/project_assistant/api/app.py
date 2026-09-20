@@ -20,6 +20,8 @@ from .schemas import (
     ConversationCreateRequest,
     ProjectCreateRequest,
     ProjectImportRequest,
+    ProjectUpdateRequest,
+    ProjectConvertToSourceRequest,
     ProjectPathRequest,
     ProposalRequest,
     QueryRequest,
@@ -29,7 +31,7 @@ from .schemas import (
 
 
 API_TOKEN = load_or_create_api_token()
-app = FastAPI(title="Local Project Assistant", version="0.5.0")
+app = FastAPI(title="Local Project Assistant", version="0.6.1")
 app.add_middleware(TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost", "testserver"])
 
 
@@ -89,7 +91,7 @@ def _sse(event: str, payload: dict | str) -> str:
 
 @app.get("/health")
 def health() -> dict:
-    return {"status": "ok", "version": "0.5.0"}
+    return {"status": "ok", "version": "0.6.1"}
 
 
 @app.get("/api/status")
@@ -99,7 +101,7 @@ def status() -> dict:
 
     settings = PortkeySettings.from_env()
     return {
-        "version": "0.5.0",
+        "version": "0.6.1",
         "projects_root": str(registry.projects_root),
         "portkey": {
             "base_url": settings.base_url,
@@ -153,9 +155,39 @@ def get_project(project_id: str) -> dict:
         raise _error(exc, 404)
 
 
+@app.patch("/api/projects/{project_id}")
+def update_project(project_id: str, body: ProjectUpdateRequest) -> dict:
+    try:
+        project = registry.rename(project_id, body.name)
+        invalidate(project_id)
+        return _project_info(project.id)
+    except Exception as exc:
+        raise _error(exc)
+
+
+@app.post("/api/projects/{project_id}/convert-to-source")
+def convert_project_to_source(project_id: str, body: ProjectConvertToSourceRequest) -> dict:
+    try:
+        # Invalidate while the imported project is still discoverable. After a
+        # successful conversion it is intentionally removed from the catalogue.
+        invalidate(project_id)
+        target, source = registry.convert_imported_to_source(
+            project_id, body.target_project_id, body.source_name
+        )
+        invalidate(target.id)
+        return {
+            "removed_project_id": project_id,
+            "target_project": _project_info(target.id),
+            "source": {"name": source.name, "path": source.path},
+        }
+    except Exception as exc:
+        raise _error(exc)
+
+
 @app.delete("/api/projects/{project_id}")
 def unregister_project(project_id: str) -> dict:
     try:
+        invalidate(project_id)
         registry.remove(project_id)
         return {"ok": True}
     except Exception as exc:

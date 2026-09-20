@@ -302,6 +302,72 @@ class WebFoundationTests(unittest.TestCase):
             restarted = WorkspaceRegistry(home=home)
             self.assertEqual(restarted.get(imported.id).path, str(repo.resolve()))
 
+    def test_imported_project_can_be_converted_to_source_without_moving_repo(self):
+        from project_assistant.config import ProjectConfig
+        from project_assistant.workspace import WorkspaceRegistry
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home = root / "assistant-home"
+            source_repo = root / "source-code"
+            source_repo.mkdir()
+            subprocess.run(["git", "init", "-q", str(source_repo)], check=True)
+            (source_repo / "app.py").write_text("print('source')\n", encoding="utf-8")
+
+            registry = WorkspaceRegistry(home=home)
+            target = registry.create("Real project")
+            mistaken = registry.import_repo(source_repo, "Shared source")
+
+            updated, source = registry.convert_imported_to_source(mistaken.id, target.id, "shared-source")
+            self.assertEqual(updated.id, target.id)
+            self.assertEqual(source.name, "shared-source")
+            self.assertEqual(Path(source.path), source_repo.resolve())
+            self.assertTrue(source_repo.exists())
+            self.assertTrue((source_repo / ".git").is_dir())
+
+            config = ProjectConfig.load(Path(target.path))
+            resolved = {item.name: Path(item.path) for item in config.resolved_sources(Path(target.path))}
+            self.assertEqual(resolved["shared-source"], source_repo.resolve())
+            with self.assertRaises(KeyError):
+                registry.get(mistaken.id)
+
+            restarted = WorkspaceRegistry(home=home)
+            self.assertEqual([item.id for item in restarted.list()], [target.id])
+
+    def test_failed_conversion_does_not_forget_imported_project(self):
+        from project_assistant.config import ProjectConfig, SourceRoot
+        from project_assistant.workspace import WorkspaceRegistry
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home = root / "assistant-home"
+            repo = root / "source-code"
+            repo.mkdir()
+            subprocess.run(["git", "init", "-q", str(repo)], check=True)
+
+            registry = WorkspaceRegistry(home=home)
+            target = registry.create("Target")
+            mistaken = registry.import_repo(repo, "Source")
+            target_config = ProjectConfig.load(Path(target.path))
+            target_config.source_roots.append(SourceRoot(name="existing", path=str(repo.resolve())))
+            target_config.save(Path(target.path))
+
+            with self.assertRaises(ValueError):
+                registry.convert_imported_to_source(mistaken.id, target.id)
+            self.assertEqual(registry.get(mistaken.id).id, mistaken.id)
+
+    def test_project_can_be_renamed_without_changing_repository_identity(self):
+        from project_assistant.workspace import WorkspaceRegistry
+
+        with tempfile.TemporaryDirectory() as tmp:
+            registry = WorkspaceRegistry(home=Path(tmp) / "assistant-home")
+            project = registry.create("Old name")
+            renamed = registry.rename(project.id, "New name")
+            self.assertEqual(renamed.id, project.id)
+            self.assertEqual(renamed.path, project.path)
+            self.assertEqual(renamed.name, "New name")
+            self.assertEqual(WorkspaceRegistry(home=Path(tmp) / "assistant-home").get(project.id).name, "New name")
+
     def test_v04_registry_is_migrated_so_existing_project_reappears(self):
         from project_assistant.config import init_project
         from project_assistant.workspace import WorkspaceRegistry
@@ -322,7 +388,7 @@ class WebFoundationTests(unittest.TestCase):
     def test_api_app_imports_without_initialising_rag(self):
         from project_assistant.api.app import app
 
-        self.assertEqual(app.version, "0.5.0")
+        self.assertEqual(app.version, "0.6.1")
 
     def test_portkey_url_is_explicit_and_does_not_default_public(self):
         from project_assistant.config import PortkeySettings
@@ -343,3 +409,47 @@ class WebFoundationTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TitanEmbeddingTests(unittest.TestCase):
+    def test_titan_adapter_sends_one_raw_string_per_request(self):
+        from types import SimpleNamespace
+        from project_assistant.config import PortkeySettings
+        from project_assistant.portkey import PortkeyTitanEmbeddings
+
+        calls = []
+
+        class FakeEmbeddingsEndpoint:
+            def create(self, **kwargs):
+                calls.append(kwargs)
+                return SimpleNamespace(data=[SimpleNamespace(embedding=[0.1, 0.2, 0.3])])
+
+        fake_client = SimpleNamespace(embeddings=FakeEmbeddingsEndpoint())
+        settings = PortkeySettings(
+            base_url="https://example.invalid/v1",
+            api_key="",
+            chat_model="gpt-5.6",
+            embedding_model="@bedrock-au/amazon.titan-embed-text-v2:0",
+        )
+        embeddings = PortkeyTitanEmbeddings(settings, client=fake_client)
+
+        vectors = embeddings.embed_documents(["first raw document", "second raw document"])
+        query_vector = embeddings.embed_query("raw query")
+
+        self.assertEqual(vectors, [[0.1, 0.2, 0.3], [0.1, 0.2, 0.3]])
+        self.assertEqual(query_vector, [0.1, 0.2, 0.3])
+        self.assertEqual(
+            calls,
+            [
+                {"model": "@bedrock-au/amazon.titan-embed-text-v2:0", "input": "first raw document"},
+                {"model": "@bedrock-au/amazon.titan-embed-text-v2:0", "input": "second raw document"},
+                {"model": "@bedrock-au/amazon.titan-embed-text-v2:0", "input": "raw query"},
+            ],
+        )
+
+    def test_titan_model_detection_handles_portkey_provider_prefix(self):
+        from project_assistant.portkey import _is_titan_text_v2
+
+        self.assertTrue(_is_titan_text_v2("@bedrock-au/amazon.titan-embed-text-v2:0"))
+        self.assertTrue(_is_titan_text_v2("amazon.titan-embed-text-v2:0"))
+        self.assertFalse(_is_titan_text_v2("cohere.embed-english-v3"))

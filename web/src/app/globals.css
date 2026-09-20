@@ -70,3 +70,6 @@ button { cursor: pointer; }
 .context-list { margin: 0; padding-left: 16px; color: #cbd1dc; font-size: 11px; line-height: 1.45; }
 .context-text { max-height: 420px; overflow: auto; white-space: pre-wrap; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 10px; line-height: 1.45; color: #b8bfcc; background: #0d0f13; border-radius: 8px; padding: 10px; }
 @media (max-width: 1100px) { .app-shell { grid-template-columns: 230px minmax(0,1fr); } .inspector { display: none; } }
+.grow { flex: 1 1 320px; }
+.correction-box { margin-top: 14px; border-top: 1px solid var(--line); padding-top: 14px; }
+select.input { appearance: auto; }
