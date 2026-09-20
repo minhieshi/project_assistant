@@ -96,6 +96,7 @@ class PortkeySettings:
     embedding_config_id: str | None = None
     extra_headers: dict[str, str] = field(default_factory=dict)
     api_mode: str = "chat_completions"
+    reasoning_effort: str = "high"
 
     @classmethod
     def from_env(cls) -> "PortkeySettings":
@@ -106,7 +107,7 @@ class PortkeySettings:
             raise ValueError("PORTKEY_EXTRA_HEADERS_JSON must be valid JSON") from exc
         if not isinstance(extra, dict):
             raise ValueError("PORTKEY_EXTRA_HEADERS_JSON must be a JSON object")
-        return cls(
+        settings = cls(
             base_url=os.getenv("PORTKEY_BASE_URL", "").rstrip("/"),
             api_key=os.getenv("PORTKEY_API_KEY", ""),
             chat_model=os.getenv("PORTKEY_CHAT_MODEL", "gpt-5.6"),
@@ -116,8 +117,14 @@ class PortkeySettings:
             chat_config_id=os.getenv("PORTKEY_CHAT_CONFIG_ID") or None,
             embedding_config_id=os.getenv("PORTKEY_EMBEDDING_CONFIG_ID") or None,
             extra_headers={str(k): str(v) for k, v in extra.items()},
-            api_mode=os.getenv("PORTKEY_API_MODE", "chat_completions"),
+            api_mode=os.getenv("PORTKEY_API_MODE", "chat_completions").strip().lower(),
+            reasoning_effort=(os.getenv("PORTKEY_REASONING_EFFORT") or "high").strip().lower(),
         )
+        if settings.api_mode not in {"chat_completions", "responses"}:
+            raise ValueError("PORTKEY_API_MODE must be 'chat_completions' or 'responses'")
+        if settings.reasoning_effort not in {"low", "medium", "high"}:
+            raise ValueError("PORTKEY_REASONING_EFFORT must be low, medium, or high")
+        return settings
 
     def _headers(self, virtual_key: str | None, config_id: str | None) -> dict[str, str]:
         headers = dict(self.extra_headers)

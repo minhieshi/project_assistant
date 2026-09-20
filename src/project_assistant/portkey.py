@@ -1,7 +1,10 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Iterable, Protocol
+import json
+from dataclasses import dataclass, field
+from typing import Callable, Iterable, Protocol
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
 
 from .config import PortkeySettings
 from .security import EgressPolicy
@@ -32,49 +35,84 @@ class SafeEmbeddings:
         return self.delegate.embed_query(text)
 
 
-class PortkeyTitanEmbeddings:
-    """LangChain-compatible Amazon Titan V2 embeddings through Portkey.
+def _post_json(url: str, headers: dict[str, str], payload: dict, timeout: float = 60.0) -> dict:
+    """POST JSON without an LLM SDK so the outbound schema is exactly controlled."""
+    request_headers = {"Content-Type": "application/json", "Accept": "application/json", **headers}
+    request = Request(
+        url,
+        data=json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8"),
+        headers=request_headers,
+        method="POST",
+    )
+    try:
+        with urlopen(request, timeout=timeout) as response:  # nosec B310 - URL is enterprise-configured
+            raw = response.read().decode("utf-8")
+    except HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"Portkey embeddings HTTP {exc.code}: {body}") from exc
+    except URLError as exc:
+        raise RuntimeError(f"Portkey embeddings request failed: {exc.reason}") from exc
 
-    Titan Text Embeddings V2 accepts one text input per native Bedrock invocation.
-    Portkey exposes that model through its OpenAI-compatible /embeddings endpoint,
-    but generic LangChain embedding adapters may batch inputs or pre-tokenise them.
-    This adapter intentionally sends exactly one raw string per request and omits
-    optional inference fields unless we explicitly add support for them later.
+    try:
+        decoded = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("Portkey embeddings response was not valid JSON") from exc
+    if not isinstance(decoded, dict):
+        raise RuntimeError("Portkey embeddings response was not a JSON object")
+    return decoded
+
+
+class PortkeyTitanEmbeddings:
+    """Amazon Titan Text Embeddings V2 through Portkey using exact HTTP JSON.
+
+    The OpenAI SDK currently injects ``encoding_format=base64`` when that field is
+    omitted. That default is useful for OpenAI embeddings but can violate the
+    Bedrock/Titan schema after Portkey translation. This adapter bypasses the SDK
+    entirely and sends exactly one raw string per request with float output.
     """
 
     def __init__(
         self,
         settings: PortkeySettings,
         policy: EgressPolicy | None = None,
-        client=None,
+        post_json: Callable[[str, dict[str, str], dict, float], dict] | None = None,
+        timeout: float = 60.0,
     ) -> None:
         self.settings = settings
         self.policy = policy or EgressPolicy()
-        self._client_override = client
-
-    def _client(self):
-        if self._client_override is not None:
-            return self._client_override
-        from openai import OpenAI
-
-        return OpenAI(
-            api_key="portkey-placeholder",
-            base_url=self.settings.base_url,
-            default_headers=self.settings.embedding_headers(),
-        )
+        self._post_json = post_json or _post_json
+        self.timeout = timeout
 
     def _embed_one(self, text: str, *, label: str) -> list[float]:
         self.policy.assert_text_safe(text, label=label)
         if not text or not text.strip():
             raise ValueError("Embedding input must not be empty")
 
-        response = self._client().embeddings.create(
-            model=self.settings.embedding_model,
-            input=text,
+        payload = {
+            "model": self.settings.embedding_model,
+            "input": text,
+            "encoding_format": "float",
+        }
+        response = self._post_json(
+            f"{self.settings.base_url.rstrip('/')}/embeddings",
+            self.settings.embedding_headers(),
+            payload,
+            self.timeout,
         )
-        if not response.data:
-            raise RuntimeError("Portkey embedding response contained no vectors")
-        return list(response.data[0].embedding)
+
+        # Portkey's standard embeddings response is OpenAI-compatible.
+        data = response.get("data")
+        if isinstance(data, list) and data and isinstance(data[0], dict):
+            embedding = data[0].get("embedding")
+            if isinstance(embedding, list):
+                return [float(value) for value in embedding]
+
+        # Defensive compatibility if a gateway ever exposes Titan's direct shape.
+        embedding = response.get("embedding")
+        if isinstance(embedding, list):
+            return [float(value) for value in embedding]
+
+        raise RuntimeError("Portkey embedding response contained no vector")
 
     def embed_documents(self, texts: list[str]) -> list[list[float]]:
         # Keep requests single-input for Titan/Bedrock schema compatibility.
@@ -99,16 +137,14 @@ def get_embedding_function(settings: PortkeySettings):
     if not settings.embedding_model:
         raise RuntimeError("PORTKEY_EMBEDDING_MODEL is not configured")
 
-    # Bedrock Titan needs raw single-string requests. Avoid the generic LangChain
-    # adapter because it can batch and/or pre-tokenise inputs in ways that violate
-    # Titan's native schema behind Portkey.
     if _is_titan_text_v2(settings.embedding_model):
         return PortkeyTitanEmbeddings(settings)
 
     from langchain_openai import OpenAIEmbeddings
 
     delegate = OpenAIEmbeddings(
-        api_key="portkey-placeholder",
+        # Dummy SDK credential only. Real Portkey auth is supplied in x-portkey-* headers.
+        api_key="unused-portkey-sdk-placeholder",
         base_url=settings.base_url,
         default_headers=settings.embedding_headers(),
         model=settings.embedding_model,
@@ -121,9 +157,12 @@ def get_embedding_function(settings: PortkeySettings):
 @dataclass
 class PortkeyChatModel:
     settings: PortkeySettings
-    policy: EgressPolicy = EgressPolicy()
+    policy: EgressPolicy = field(default_factory=EgressPolicy)
+    client_override: object | None = None
 
     def _client(self):
+        if self.client_override is not None:
+            return self.client_override
         if not self.settings.base_url:
             raise RuntimeError(
                 "PORTKEY_BASE_URL is not configured. Remote GPT inference is disabled "
@@ -132,7 +171,8 @@ class PortkeyChatModel:
         from openai import OpenAI
 
         return OpenAI(
-            api_key="portkey-placeholder",
+            # Dummy SDK credential only. Real Portkey auth is supplied in x-portkey-* headers.
+            api_key="unused-portkey-sdk-placeholder",
             base_url=self.settings.base_url,
             default_headers=self.settings.chat_headers(),
         )
@@ -149,9 +189,7 @@ class PortkeyChatModel:
                 model=self.settings.chat_model,
                 instructions=system,
                 input=user,
-                reasoning={
-                    "effort": "high"
-                },
+                reasoning={"effort": self.settings.reasoning_effort},
             )
             return response.output_text
 
@@ -161,6 +199,7 @@ class PortkeyChatModel:
                 {"role": "system", "content": system},
                 {"role": "user", "content": user},
             ],
+            reasoning_effort=self.settings.reasoning_effort,
         )
         content = response.choices[0].message.content
         return content or ""
@@ -173,6 +212,7 @@ class PortkeyChatModel:
                 model=self.settings.chat_model,
                 instructions=system,
                 input=user,
+                reasoning={"effort": self.settings.reasoning_effort},
                 stream=True,
             )
             for event in stream:
@@ -188,6 +228,7 @@ class PortkeyChatModel:
                 {"role": "system", "content": system},
                 {"role": "user", "content": user},
             ],
+            reasoning_effort=self.settings.reasoning_effort,
             stream=True,
         )
         for chunk in stream:

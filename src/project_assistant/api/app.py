@@ -31,7 +31,7 @@ from .schemas import (
 
 
 API_TOKEN = load_or_create_api_token()
-app = FastAPI(title="Local Project Assistant", version="0.6.1")
+app = FastAPI(title="Local Project Assistant", version="0.6.2")
 app.add_middleware(TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost", "testserver"])
 
 
@@ -91,7 +91,7 @@ def _sse(event: str, payload: dict | str) -> str:
 
 @app.get("/health")
 def health() -> dict:
-    return {"status": "ok", "version": "0.6.1"}
+    return {"status": "ok", "version": "0.6.2"}
 
 
 @app.get("/api/status")
@@ -101,13 +101,15 @@ def status() -> dict:
 
     settings = PortkeySettings.from_env()
     return {
-        "version": "0.6.1",
+        "version": "0.6.2",
         "projects_root": str(registry.projects_root),
         "portkey": {
             "base_url": settings.base_url,
             "base_url_configured": bool(settings.base_url),
             "api_key_configured": bool(settings.api_key),
             "chat_model": settings.chat_model,
+            "api_mode": settings.api_mode,
+            "reasoning_effort": settings.reasoning_effort,
             "embedding_model_configured": bool(settings.embedding_model),
         },
     }

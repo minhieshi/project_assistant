@@ -37,11 +37,11 @@ Restore the high-value parts of the enterprise ChatGPT browser experience locall
 
 ## Current work
 
-v0.6 adds editable project metadata and a safe imported-project-to-source correction workflow, while retaining persistent Git-backed discovery, fail-closed Portkey configuration and the v0.4 security hardening.
+v0.6.2 hardens the Portkey integration: Titan embeddings now use an exact direct-HTTP schema, and chat requests explicitly use the enterprise-supported `high` reasoning level with a connectivity/streaming test command.
 
 ## Known issues
 
-- Portkey embedding/Chroma path still requires live verification against the enterprise gateway and chosen embedding model.
+- Titan direct-HTTP embeddings and GPT chat still require live verification against the enterprise Portkey gateway; local request-shape tests now cover both paths.
 - Secret scanning is intentionally conservative and should complement, not replace, enterprise DLP controls.
 - Git indexing excludes brand-new untracked files.
 - No filesystem watcher or reranker yet.
@@ -59,3 +59,12 @@ v0.6 adds editable project metadata and a safe imported-project-to-source correc
 ## v0.6.1 Titan embedding compatibility
 
 The configured enterprise embedding route is `@bedrock-au/amazon.titan-embed-text-v2:0`. Titan V2 uses a dedicated Portkey adapter that sends one raw string per embedding request and leaves optional dimensions/normalisation fields unset so Bedrock defaults apply. A fixed-string `project-assistant embedding-test` command is available before indexing real source code.
+
+
+## v0.6.2 Portkey request hardening
+
+- Titan V2 bypasses LangChain and the OpenAI SDK for embeddings so the outbound JSON is fully controlled.
+- Exact Titan payload: provider-prefixed model, one raw string input, float encoding; dimensions/normalisation use Bedrock defaults.
+- Real Portkey credentials remain environment-backed headers; SDK placeholder credentials are never enterprise secrets.
+- Chat reasoning defaults to the enterprise-supported `high` ceiling for both Chat Completions and Responses modes.
+- `embedding-test` and `chat-test` provide small, non-sensitive route validation before indexing or normal conversation use.

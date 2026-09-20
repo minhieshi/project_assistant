@@ -388,7 +388,7 @@ class WebFoundationTests(unittest.TestCase):
     def test_api_app_imports_without_initialising_rag(self):
         from project_assistant.api.app import app
 
-        self.assertEqual(app.version, "0.6.1")
+        self.assertEqual(app.version, "0.6.2")
 
     def test_portkey_url_is_explicit_and_does_not_default_public(self):
         from project_assistant.config import PortkeySettings
@@ -407,45 +407,92 @@ class WebFoundationTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class TitanEmbeddingTests(unittest.TestCase):
-    def test_titan_adapter_sends_one_raw_string_per_request(self):
-        from types import SimpleNamespace
+    def test_titan_adapter_posts_exact_json_without_sdk_defaults(self):
         from project_assistant.config import PortkeySettings
         from project_assistant.portkey import PortkeyTitanEmbeddings
 
         calls = []
 
-        class FakeEmbeddingsEndpoint:
-            def create(self, **kwargs):
-                calls.append(kwargs)
-                return SimpleNamespace(data=[SimpleNamespace(embedding=[0.1, 0.2, 0.3])])
+        def fake_post(url, headers, payload, timeout):
+            calls.append({"url": url, "headers": dict(headers), "payload": dict(payload), "timeout": timeout})
+            return {"data": [{"embedding": [0.1, 0.2, 0.3]}]}
 
-        fake_client = SimpleNamespace(embeddings=FakeEmbeddingsEndpoint())
         settings = PortkeySettings(
-            base_url="https://example.invalid/v1",
-            api_key="",
+            base_url="https://gateway.example.invalid/v1",
+            api_key="test-portkey-key",
             chat_model="gpt-5.6",
             embedding_model="@bedrock-au/amazon.titan-embed-text-v2:0",
         )
-        embeddings = PortkeyTitanEmbeddings(settings, client=fake_client)
+        embeddings = PortkeyTitanEmbeddings(settings, post_json=fake_post)
 
         vectors = embeddings.embed_documents(["first raw document", "second raw document"])
         query_vector = embeddings.embed_query("raw query")
 
         self.assertEqual(vectors, [[0.1, 0.2, 0.3], [0.1, 0.2, 0.3]])
         self.assertEqual(query_vector, [0.1, 0.2, 0.3])
+        self.assertEqual(len(calls), 3)
+        self.assertEqual(calls[0]["url"], "https://gateway.example.invalid/v1/embeddings")
+        self.assertEqual(calls[0]["headers"], {"x-portkey-api-key": "test-portkey-key"})
         self.assertEqual(
-            calls,
+            [call["payload"] for call in calls],
             [
-                {"model": "@bedrock-au/amazon.titan-embed-text-v2:0", "input": "first raw document"},
-                {"model": "@bedrock-au/amazon.titan-embed-text-v2:0", "input": "second raw document"},
-                {"model": "@bedrock-au/amazon.titan-embed-text-v2:0", "input": "raw query"},
+                {
+                    "model": "@bedrock-au/amazon.titan-embed-text-v2:0",
+                    "input": "first raw document",
+                    "encoding_format": "float",
+                },
+                {
+                    "model": "@bedrock-au/amazon.titan-embed-text-v2:0",
+                    "input": "second raw document",
+                    "encoding_format": "float",
+                },
+                {
+                    "model": "@bedrock-au/amazon.titan-embed-text-v2:0",
+                    "input": "raw query",
+                    "encoding_format": "float",
+                },
             ],
         )
+
+    def test_direct_http_transport_serialises_only_explicit_fields(self):
+        from project_assistant.portkey import _post_json
+
+        captured = {}
+
+        class FakeResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return b'{"data":[{"embedding":[1.0,2.0]}]}'
+
+        def fake_urlopen(request, timeout):
+            captured["body"] = json.loads(request.data.decode("utf-8"))
+            captured["url"] = request.full_url
+            captured["timeout"] = timeout
+            return FakeResponse()
+
+        payload = {
+            "model": "@bedrock-au/amazon.titan-embed-text-v2:0",
+            "input": "raw text",
+            "encoding_format": "float",
+        }
+        with patch("project_assistant.portkey.urlopen", fake_urlopen):
+            response = _post_json(
+                "https://gateway.example.invalid/v1/embeddings",
+                {"x-portkey-api-key": "test-key"},
+                payload,
+                12.0,
+            )
+
+        self.assertEqual(captured["body"], payload)
+        self.assertEqual(captured["url"], "https://gateway.example.invalid/v1/embeddings")
+        self.assertEqual(captured["timeout"], 12.0)
+        self.assertEqual(response["data"][0]["embedding"], [1.0, 2.0])
 
     def test_titan_model_detection_handles_portkey_provider_prefix(self):
         from project_assistant.portkey import _is_titan_text_v2
@@ -453,3 +500,82 @@ class TitanEmbeddingTests(unittest.TestCase):
         self.assertTrue(_is_titan_text_v2("@bedrock-au/amazon.titan-embed-text-v2:0"))
         self.assertTrue(_is_titan_text_v2("amazon.titan-embed-text-v2:0"))
         self.assertFalse(_is_titan_text_v2("cohere.embed-english-v3"))
+
+
+class ChatRouteTests(unittest.TestCase):
+    def test_chat_completions_sends_high_reasoning(self):
+        from types import SimpleNamespace
+        from project_assistant.config import PortkeySettings
+        from project_assistant.portkey import PortkeyChatModel
+
+        calls = []
+
+        class Endpoint:
+            def create(self, **kwargs):
+                calls.append(kwargs)
+                if kwargs.get("stream"):
+                    return [SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(content="OK"))])]
+                return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content="OK"))])
+
+        client = SimpleNamespace(chat=SimpleNamespace(completions=Endpoint()))
+        settings = PortkeySettings(
+            base_url="https://gateway.example.invalid/v1",
+            api_key="",
+            chat_model="@enterprise/gpt-5-6-sol",
+            embedding_model="",
+            api_mode="chat_completions",
+            reasoning_effort="high",
+        )
+        model = PortkeyChatModel(settings, client_override=client)
+        self.assertEqual(model.complete("system", "user"), "OK")
+        self.assertEqual("".join(model.stream("system", "user")), "OK")
+        self.assertEqual(calls[0]["reasoning_effort"], "high")
+        self.assertEqual(calls[1]["reasoning_effort"], "high")
+        self.assertTrue(calls[1]["stream"])
+
+    def test_responses_sends_high_reasoning(self):
+        from types import SimpleNamespace
+        from project_assistant.config import PortkeySettings
+        from project_assistant.portkey import PortkeyChatModel
+
+        calls = []
+
+        class Endpoint:
+            def create(self, **kwargs):
+                calls.append(kwargs)
+                if kwargs.get("stream"):
+                    return [SimpleNamespace(type="response.output_text.delta", delta="OK")]
+                return SimpleNamespace(output_text="OK")
+
+        client = SimpleNamespace(responses=Endpoint())
+        settings = PortkeySettings(
+            base_url="https://gateway.example.invalid/v1",
+            api_key="",
+            chat_model="@enterprise/gpt-5-6-sol",
+            embedding_model="",
+            api_mode="responses",
+            reasoning_effort="high",
+        )
+        model = PortkeyChatModel(settings, client_override=client)
+        self.assertEqual(model.complete("system", "user"), "OK")
+        self.assertEqual("".join(model.stream("system", "user")), "OK")
+        self.assertEqual(calls[0]["reasoning"], {"effort": "high"})
+        self.assertEqual(calls[1]["reasoning"], {"effort": "high"})
+        self.assertTrue(calls[1]["stream"])
+
+    def test_reasoning_effort_defaults_to_high_and_is_capped_to_supported_values(self):
+        from project_assistant.config import PortkeySettings
+
+        with patch.dict(os.environ, {"PORTKEY_REASONING_EFFORT": "", "PORTKEY_API_MODE": "chat_completions"}, clear=False):
+            self.assertEqual(PortkeySettings.from_env().reasoning_effort, "high")
+
+        with patch.dict(os.environ, {"PORTKEY_REASONING_EFFORT": "high", "PORTKEY_API_MODE": "chat_completions"}, clear=False):
+            self.assertEqual(PortkeySettings.from_env().reasoning_effort, "high")
+
+        with patch.dict(os.environ, {"PORTKEY_REASONING_EFFORT": "max", "PORTKEY_API_MODE": "chat_completions"}, clear=False):
+            with self.assertRaises(ValueError):
+                PortkeySettings.from_env()
+
+
+if __name__ == "__main__":
+    unittest.main()

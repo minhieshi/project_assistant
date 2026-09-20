@@ -1,4 +1,4 @@
-# Local Project Assistant — v0.6.1
+# Local Project Assistant — v0.6.2
 
 A local-first engineering workbench for source-heavy enterprise work: persistent Markdown conversations, multi-repo RAG, deterministic knowledge graph, context compilation and two-stage approval-gated code changes.
 
@@ -161,7 +161,7 @@ Code chunks retain repo/path/language/symbol/line metadata. Git-backed repos use
 Backend:
 
 ```bash
-cd project-assistant-v0.6.1
+cd project-assistant-v0.6.2
 python -m venv .venv
 source .venv/bin/activate
 pip install -e .
@@ -188,13 +188,25 @@ export PORTKEY_EXTRA_HEADERS_JSON='{}'
 
 ### Titan Text Embeddings V2 through Portkey
 
-For `@bedrock-au/amazon.titan-embed-text-v2:0`, v0.6.1 uses a provider-specific adapter rather than `langchain_openai.OpenAIEmbeddings`. It sends one raw string per `/embeddings` request and deliberately omits optional `dimensions`, `normalize` and `encoding_format` fields. This avoids LangChain pre-tokenisation/batching shapes that can be rejected by Bedrock. Titan V2 therefore uses its defaults (1024 dimensions and normalisation enabled).
+For `@bedrock-au/amazon.titan-embed-text-v2:0`, v0.6.2 uses a provider-specific **direct HTTP** adapter rather than LangChain/OpenAI SDK embeddings. Each changed chunk is sent as exactly one raw string to `${PORTKEY_BASE_URL}/embeddings` with `encoding_format: "float"`. No SDK can inject token arrays, batching, `base64`, or other hidden fields. `dimensions` and `normalize` remain unset, so Titan V2 uses its Bedrock defaults (1024 dimensions and normalisation enabled).
 
 Before indexing a repository, test the route with a fixed non-sensitive string:
 
 ```bash
 project-assistant embedding-test
 ```
+
+### Chat route test and reasoning
+
+The enterprise chat route is treated as an opaque Portkey model identifier and is passed through unchanged. Project Assistant defaults to `PORTKEY_REASONING_EFFORT=high` and deliberately accepts only `low`, `medium`, or `high` for this environment.
+
+`PORTKEY_API_MODE=chat_completions` sends `reasoning_effort="high"`; `PORTKEY_API_MODE=responses` sends `reasoning={"effort":"high"}`. Validate both the non-streaming and streaming path before normal use:
+
+```bash
+project-assistant chat-test
+```
+
+The OpenAI SDK constructor still receives a clearly named dummy credential for chat/generic embedding clients because real Portkey authentication is supplied only through `x-portkey-*` headers from environment-backed settings. Never hard-code the real Portkey key in source.
 
 A healthy Titan V2 route should print approximately:
 
@@ -362,7 +374,7 @@ A newly created managed project is its own local Git repo:
 PYTHONPATH=src python -m unittest discover -s tests -v
 ```
 
-v0.6.1 currently has 25 backend/core tests covering the two-stage approval gate, patch tampering, HEAD changes, secret detection, path traversal, API authentication, retrieval and graph behaviour.
+v0.6.2 currently has 29 backend/core tests covering the two-stage approval gate, patch tampering, HEAD changes, secret detection, path traversal, API authentication, retrieval and graph behaviour.
 
 After `npm install`:
 

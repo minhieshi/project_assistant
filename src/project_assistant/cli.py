@@ -48,6 +48,7 @@ def main() -> None:
 
     sub.add_parser("index")
     sub.add_parser("embedding-test", help="Test the configured embedding route with a fixed non-sensitive string")
+    sub.add_parser("chat-test", help="Test the configured chat route, reasoning level, and streaming")
 
     p_new = sub.add_parser("chat-new")
     p_new.add_argument("title")
@@ -133,6 +134,23 @@ def main() -> None:
         embeddings = get_embedding_function(settings)
         vector = embeddings.embed_query("Project Assistant embedding connectivity test")
         print(f"OK model={settings.embedding_model} dimensions={len(vector)}")
+        return
+
+    if args.command == "chat-test":
+        from .config import PortkeySettings
+        from .portkey import PortkeyChatModel
+
+        settings = PortkeySettings.from_env()
+        model = PortkeyChatModel(settings)
+        system = "You are a connectivity test. Follow the user instruction exactly."
+        user = "Reply with exactly PROJECT_ASSISTANT_OK"
+        response = model.complete(system, user).strip()
+        streamed = "".join(model.stream(system, user)).strip()
+        print(f"model={settings.chat_model}")
+        print(f"api_mode={settings.api_mode}")
+        print(f"reasoning={settings.reasoning_effort}")
+        print(f"non_streaming={response}")
+        print(f"streaming={streamed}")
         return
 
     if args.command == "init":
