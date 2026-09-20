@@ -1,0 +1,148 @@
+from __future__ import annotations
+
+import argparse
+import json
+from pathlib import Path
+
+from .assistant import ProjectAssistant
+from .config import ProjectConfig, SourceRoot, init_project
+from .security import validate_source_root
+
+
+def _project(value: str) -> Path:
+    return Path(value).expanduser().resolve()
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(prog="project-assistant")
+    parser.add_argument("--project", default=".", help="Project assistant directory")
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    p_init = sub.add_parser("init")
+    p_init.add_argument("--name", required=True)
+
+    p_source = sub.add_parser("source-add")
+    p_source.add_argument("path")
+    p_source.add_argument("--name")
+
+    sub.add_parser("index")
+
+    p_new = sub.add_parser("chat-new")
+    p_new.add_argument("title")
+
+    p_chat = sub.add_parser("chat")
+    p_chat.add_argument("conversation_id")
+    p_chat.add_argument("message")
+
+    p_propose = sub.add_parser("propose")
+    p_propose.add_argument("conversation_id")
+    p_propose.add_argument("request")
+
+    p_approve = sub.add_parser("approve")
+    p_approve.add_argument("proposal_id")
+
+    p_reject = sub.add_parser("reject")
+    p_reject.add_argument("proposal_id")
+
+    p_stage = sub.add_parser("stage-patch")
+    p_stage.add_argument("proposal_id")
+    p_stage.add_argument("patch")
+    p_stage.add_argument("--repo", required=True)
+
+    p_approve_patch = sub.add_parser("approve-patch")
+    p_approve_patch.add_argument("proposal_id")
+
+    p_apply = sub.add_parser("apply-patch")
+    p_apply.add_argument("proposal_id")
+
+    p_search = sub.add_parser("search")
+    p_search.add_argument("query")
+
+    p_graph = sub.add_parser("graph")
+    p_graph.add_argument("query")
+
+    p_route = sub.add_parser("route")
+    p_route.add_argument("query")
+
+    p_context = sub.add_parser("context")
+    p_context.add_argument("query")
+    p_context.add_argument("--conversation")
+
+    args = parser.parse_args()
+    project_dir = _project(args.project)
+
+    if args.command == "init":
+        config = init_project(project_dir, args.name)
+        print(config.save(project_dir))
+        return
+
+    if args.command == "source-add":
+        config = ProjectConfig.load(project_dir)
+        path = validate_source_root(Path(args.path))
+        name = args.name or path.name
+        if any(s.name == name for s in config.source_roots):
+            raise SystemExit(f"Source name already exists: {name}")
+        config.source_roots.append(SourceRoot(name=name, path=str(path)))
+        config.save(project_dir)
+        print(f"Added source {name}: {path}")
+        return
+
+    assistant = ProjectAssistant.build(project_dir)
+
+    if args.command == "index":
+        print(json.dumps(assistant.indexer.index_changed(), indent=2))
+    elif args.command == "chat-new":
+        conv = assistant.conversations.create(args.title)
+        print(conv.id)
+        print(conv.path)
+    elif args.command == "chat":
+        print(assistant.answer(args.conversation_id, args.message))
+    elif args.command == "propose":
+        proposal = assistant.propose_change(args.conversation_id, args.request)
+        print(proposal.id)
+        print("PENDING PLAN APPROVAL")
+    elif args.command == "approve":
+        proposal = assistant.approve(args.proposal_id)
+        print(f"{proposal.id}: {proposal.status}")
+    elif args.command == "reject":
+        proposal = assistant.reject(args.proposal_id)
+        print(f"{proposal.id}: {proposal.status}")
+    elif args.command == "stage-patch":
+        proposal = assistant.gate.stage_patch(args.proposal_id, Path(args.patch), Path(args.repo))
+        print(f"{proposal.id}: {proposal.status} sha256={proposal.patch_sha256}")
+    elif args.command == "approve-patch":
+        proposal = assistant.gate.approve_patch(args.proposal_id)
+        print(f"{proposal.id}: {proposal.status}")
+    elif args.command == "apply-patch":
+        proposal = assistant.gate.apply_patch(args.proposal_id)
+        print(f"{proposal.id}: {proposal.status}")
+    elif args.command == "search":
+        for hit in assistant.indexer.search(args.query):
+            line = ""
+            if hit.metadata.get("start_line"):
+                line = f":{hit.metadata.get('start_line')}-{hit.metadata.get('end_line')}"
+            symbol = f" symbol={hit.metadata.get('symbol')}" if hit.metadata.get("symbol") else ""
+            print(f"{hit.metadata.get('repo')}:{hit.metadata.get('relative_path')}{line}{symbol} score={hit.score} via={','.join(hit.channels)}")
+            print(hit.text[:600].replace("\n", " "))
+            print()
+    elif args.command == "graph":
+        for hit in assistant.indexer.graph.search(args.query, limit=assistant.config.graph_top_n):
+            print(f"{hit.node_type}: {hit.name} ({hit.source_path or 'cross-file'})")
+            for n in hit.neighbours:
+                print(f"  {n}")
+    elif args.command == "route":
+        graph_hits = assistant.indexer.graph.search(args.query, limit=assistant.config.graph_top_n)
+        vector_hits = assistant.indexer.vector_search(args.query, k=assistant.config.vector_top_k)
+        lexical_hits = assistant.indexer.lexical_search(args.query, k=assistant.config.lexical_top_k)
+        for route in assistant.indexer.catalog.route(args.query, lexical_hits, vector_hits, graph_hits, assistant.config.repo_route_top_n):
+            print(f"{route.name}: {route.score:.3f} ({', '.join(route.reasons) or 'fallback'})")
+    elif args.command == "context":
+        compiled = assistant.compiler.compile(args.query, args.conversation)
+        path = assistant.compiler.write_debug_snapshot(compiled)
+        print(f"Estimated tokens: {compiled.estimated_tokens}")
+        print(f"Snapshot: {path}")
+        print(compiled.text)
+
+
+if __name__ == "__main__":
+    main()

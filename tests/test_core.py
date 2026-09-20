@@ -1,0 +1,295 @@
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+import tempfile
+import unittest
+from pathlib import Path
+from unittest.mock import patch
+
+from project_assistant.change_gate import ChangeGate
+from project_assistant.conversations import ConversationStore
+from project_assistant.knowledge_graph import KnowledgeGraph
+from project_assistant.security import EgressBlockedError, EgressPolicy, SecurityError, load_or_create_api_token
+
+
+class CoreTests(unittest.TestCase):
+    @staticmethod
+    def _git_repo(root: Path) -> Path:
+        repo = root / "repo"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q", str(repo)], check=True)
+        subprocess.run(["git", "-C", str(repo), "config", "user.email", "test@example.invalid"], check=True)
+        subprocess.run(["git", "-C", str(repo), "config", "user.name", "Project Assistant Tests"], check=True)
+        (repo / "value.txt").write_text("old\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(repo), "add", "value.txt"], check=True)
+        subprocess.run(["git", "-C", str(repo), "commit", "-qm", "base"], check=True)
+        return repo
+
+    @staticmethod
+    def _patch(path: Path) -> Path:
+        patch_path = path / "change.diff"
+        patch_path.write_text(
+            "diff --git a/value.txt b/value.txt\n"
+            "--- a/value.txt\n"
+            "+++ b/value.txt\n"
+            "@@ -1 +1 @@\n"
+            "-old\n"
+            "+new\n",
+            encoding="utf-8",
+        )
+        return patch_path
+
+    def test_change_gate_requires_two_explicit_approvals(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = self._git_repo(root)
+            patch_path = self._patch(root)
+            store = ConversationStore(root / ".assistant/conversations")
+            conv = store.create("Patch gate")
+            gate = ChangeGate(root, store, allowed_repo_roots=[repo])
+            proposal = gate.create(conv.id, "Change value", "Change value.txt")
+
+            with self.assertRaises(PermissionError):
+                gate.stage_patch(proposal.id, patch_path, repo)
+
+            proposal = gate.approve_plan(proposal.id)
+            self.assertEqual(proposal.status, "plan_approved")
+            proposal = gate.stage_patch(proposal.id, patch_path, repo)
+            self.assertEqual(proposal.status, "patch_pending")
+            self.assertTrue(proposal.patch_sha256)
+
+            with self.assertRaises(PermissionError):
+                gate.apply_patch(proposal.id)
+
+            proposal = gate.approve_patch(proposal.id)
+            self.assertEqual(proposal.status, "patch_approved")
+            proposal = gate.apply_patch(proposal.id)
+            self.assertEqual(proposal.status, "applied")
+            self.assertEqual((repo / "value.txt").read_text(encoding="utf-8"), "new\n")
+
+            text = conv.path.read_text(encoding="utf-8")
+            self.assertIn("PENDING PLAN APPROVAL", text)
+            self.assertIn("PLAN APPROVED", text)
+            self.assertIn("DIFF PENDING APPROVAL", text)
+            self.assertIn("DIFF APPROVED", text)
+            self.assertIn("APPLIED", text)
+
+    def test_tampered_staged_patch_cannot_be_approved(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = self._git_repo(root)
+            patch_path = self._patch(root)
+            store = ConversationStore(root / ".assistant/conversations")
+            conv = store.create("Tamper")
+            gate = ChangeGate(root, store, allowed_repo_roots=[repo])
+            proposal = gate.create(conv.id, "Change value", "Change value.txt")
+            gate.approve_plan(proposal.id)
+            proposal = gate.stage_patch(proposal.id, patch_path, repo)
+            staged = root / ".assistant/patches" / str(proposal.patch_file)
+            staged.write_text(staged.read_text(encoding="utf-8") + "\n# changed\n", encoding="utf-8")
+            with self.assertRaises(PermissionError):
+                gate.approve_patch(proposal.id)
+
+    def test_head_change_invalidates_staged_patch(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = self._git_repo(root)
+            patch_path = self._patch(root)
+            store = ConversationStore(root / ".assistant/conversations")
+            conv = store.create("HEAD change")
+            gate = ChangeGate(root, store, allowed_repo_roots=[repo])
+            proposal = gate.create(conv.id, "Change value", "Change value.txt")
+            gate.approve_plan(proposal.id)
+            gate.stage_patch(proposal.id, patch_path, repo)
+            (repo / "other.txt").write_text("other\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(repo), "add", "other.txt"], check=True)
+            subprocess.run(["git", "-C", str(repo), "commit", "-qm", "move head"], check=True)
+            with self.assertRaises(PermissionError):
+                gate.approve_patch(proposal.id)
+
+    def test_knowledge_graph_extracts_python_symbols(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "sample.py"
+            source.write_text("def renew_certificate(name):\n    return name\n", encoding="utf-8")
+            graph = KnowledgeGraph(root / "graph.sqlite3")
+            graph.index_file("repo", root, source, source.read_text())
+            hits = graph.search("renew_certificate")
+            self.assertTrue(any(hit.name == "renew_certificate" for hit in hits))
+
+    def test_conversations_are_markdown(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = ConversationStore(Path(tmp))
+            conv = store.create("Certificate work")
+            store.append(conv.id, "user", "Why is this failing?")
+            store.append(conv.id, "assistant", "Because X.")
+            text = conv.path.read_text(encoding="utf-8")
+            self.assertIn("# Certificate work", text)
+            self.assertIn("## User", text)
+            self.assertIn("## Assistant", text)
+
+
+class SecurityTests(unittest.TestCase):
+    def test_egress_policy_blocks_clear_secret_but_allows_placeholder(self):
+        policy = EgressPolicy()
+        with self.assertRaises(EgressBlockedError):
+            policy.assert_text_safe('api_key = "sk_live_1234567890abcdef"')
+        policy.assert_text_safe('api_key = "${PORTKEY_API_KEY}"')
+        self.assertFalse(policy.path_allowed(Path(".env")))
+        self.assertFalse(policy.path_allowed(Path("client.pem")))
+
+    def test_project_config_rejects_internal_path_escape(self):
+        from project_assistant.config import ProjectConfig, init_project
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "project"
+            init_project(root, "Example")
+            config_path = root / ".assistant/project.json"
+            raw = json.loads(config_path.read_text(encoding="utf-8"))
+            raw["project_memory_path"] = "../../outside.md"
+            config_path.write_text(json.dumps(raw), encoding="utf-8")
+            with self.assertRaises(SecurityError):
+                ProjectConfig.load(root)
+
+    def test_local_api_token_is_generated_in_private_home(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.dict(os.environ, {"PROJECT_ASSISTANT_HOME": tmp}, clear=False):
+                with patch.dict(os.environ, {"PROJECT_ASSISTANT_API_TOKEN": "", "PROJECT_ASSISTANT_TOKEN_FILE": ""}, clear=False):
+                    token = load_or_create_api_token()
+                    self.assertGreaterEqual(len(token), 32)
+                    token_file = Path(tmp) / "api-token"
+                    self.assertEqual(token_file.read_text(encoding="utf-8").strip(), token)
+                    if os.name == "posix":
+                        self.assertEqual(token_file.stat().st_mode & 0o777, 0o600)
+
+
+class RetrievalTests(unittest.TestCase):
+    def test_python_chunker_preserves_symbols_and_lines(self):
+        from project_assistant.code_chunking import CodeChunker
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "certs.py"
+            text = (
+                "import os\n\n"
+                "def renew_certificate(name):\n"
+                "    return name\n\n"
+                "class Manager:\n"
+                "    def validate(self, cert):\n"
+                "        return bool(cert)\n"
+            )
+            path.write_text(text, encoding="utf-8")
+            chunks = CodeChunker(max_chars=2000).chunk_file(path, text)
+            symbols = {c.symbol for c in chunks}
+            self.assertIn("renew_certificate", symbols)
+            self.assertIn("Manager", symbols)
+            renew = next(c for c in chunks if c.symbol == "renew_certificate")
+            self.assertEqual((renew.start_line, renew.end_line), (3, 4))
+
+    def test_jcl_chunker_uses_job_and_exec_steps(self):
+        from project_assistant.code_chunking import CodeChunker
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "run.jcl"
+            text = "//TESTJOB JOB CLASS=A\n//STEP1 EXEC PGM=IKJEFT01\n//SYSTSPRT DD SYSOUT=*\n//STEP2 EXEC PGM=IEFBR14\n"
+            chunks = CodeChunker(max_chars=2000).chunk_file(path, text)
+            symbols = {c.symbol for c in chunks}
+            self.assertTrue({"TESTJOB", "STEP1", "STEP2"}.issubset(symbols))
+
+    def test_lexical_index_finds_exact_symbol(self):
+        from project_assistant.lexical_index import LexicalIndex
+        with tempfile.TemporaryDirectory() as tmp:
+            index = LexicalIndex(Path(tmp) / "lex.sqlite3")
+            metadata = {
+                "id": "a", "repo": "automation", "relative_path": "certs.py",
+                "source": "/tmp/certs.py", "symbol": "renew_certificate",
+                "symbol_kind": "function", "start_line": 10, "end_line": 20,
+            }
+            index.upsert("a", "def renew_certificate(name):\n    return name", metadata)
+            hits = index.exact("renew_certificate")
+            self.assertEqual(hits[0].metadata["symbol"], "renew_certificate")
+
+    def test_repo_catalog_routes_using_paths_and_retrieval_evidence(self):
+        from project_assistant.config import SourceRoot
+        from project_assistant.repo_catalog import RepositoryCatalog
+        from types import SimpleNamespace
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            a = root / "automation"; a.mkdir()
+            b = root / "billing"; b.mkdir()
+            (a / "README.md").write_text("zCX provisioning certificate RACF automation", encoding="utf-8")
+            manifest = {
+                "/x/zcx.yml": {"source": "automation", "relative_path": "roles/zcx/tasks/main.yml", "git_branch": "main", "git_commit": "abc"},
+                "/x/pay.py": {"source": "billing", "relative_path": "src/payments.py", "git_branch": "main", "git_commit": "def"},
+            }
+            catalogue = RepositoryCatalog(root / "catalog.json")
+            catalogue.rebuild([SourceRoot("automation", str(a)), SourceRoot("billing", str(b))], manifest)
+            lexical = [SimpleNamespace(metadata={"repo": "automation"})]
+            routes = catalogue.route("why is zCX provisioning failing", lexical_hits=lexical, limit=2)
+            self.assertEqual(routes[0].name, "automation")
+
+
+class GraphExpansionTests(unittest.TestCase):
+    def test_cross_file_call_graph_expands_to_definition_and_caller(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            caller = root / "caller.py"
+            target = root / "certs.py"
+            caller.write_text('def run():\n    return renew_certificate("x")\n', encoding="utf-8")
+            target.write_text('def renew_certificate(name):\n    return name\n', encoding="utf-8")
+            graph = KnowledgeGraph(root / "graph.sqlite3")
+            graph.index_file("repo", root, caller, caller.read_text())
+            graph.index_file("repo", root, target, target.read_text())
+            hits = graph.search("renew_certificate")
+            locations = graph.related_locations(hits[:3])
+            paths = {Path(path).name for path, _ in locations}
+            self.assertIn("caller.py", paths)
+            self.assertIn("certs.py", paths)
+
+
+class WebFoundationTests(unittest.TestCase):
+    def test_conversation_entries_are_parsed_for_web_ui(self):
+        store_dir = None
+        with tempfile.TemporaryDirectory() as tmp:
+            store_dir = Path(tmp)
+            store = ConversationStore(store_dir)
+            conv = store.create("Web chat")
+            store.append(conv.id, "user", "hello")
+            store.append(conv.id, "assistant", "hi")
+            store.append_event(conv.id, "Change proposal abc — PLAN APPROVED", "approved")
+            entries = store.entries(conv.id)
+            self.assertEqual([entry.role for entry in entries], ["user", "assistant", "event"])
+            self.assertEqual(entries[0].body, "hello")
+            self.assertEqual(entries[1].body, "hi")
+
+    def test_workspace_registry_stores_paths_not_project_content(self):
+        from project_assistant.config import init_project
+        from project_assistant.workspace import WorkspaceRegistry
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            project = root / "project"
+            init_project(project, "Example")
+            registry_path = root / "registry.json"
+            registry = WorkspaceRegistry(registry_path)
+            registered = registry.register(project)
+            self.assertEqual(registry.get(registered.id).path, str(project.resolve()))
+            raw = json.loads(registry_path.read_text(encoding="utf-8"))
+            self.assertEqual(raw, {"projects": [{"path": str(project.resolve())}]})
+
+    def test_api_app_imports_without_initialising_rag(self):
+        from project_assistant.api.app import app
+
+        self.assertEqual(app.version, "0.4.0")
+
+    def test_api_requires_local_token(self):
+        from fastapi.testclient import TestClient
+        from project_assistant.api.app import API_TOKEN, app
+
+        client = TestClient(app)
+        self.assertEqual(client.get("/api/projects").status_code, 401)
+        response = client.get("/api/projects", headers={"x-project-assistant-token": API_TOKEN})
+        self.assertEqual(response.status_code, 200)
+
+
+if __name__ == "__main__":
+    unittest.main()
