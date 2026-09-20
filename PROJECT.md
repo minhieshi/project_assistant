@@ -6,7 +6,7 @@ Restore the high-value parts of the enterprise ChatGPT browser experience locall
 
 ## Architecture
 
-- Local project workspace with multiple registered source repositories.
+- Git-backed local project workspaces with multiple registered source repositories.
 - Next.js browser UI with server-side proxy to an authenticated loopback-only FastAPI API.
 - Durable Markdown conversation history.
 - Incremental Chroma semantic index using approved Portkey embeddings.
@@ -31,10 +31,13 @@ Restore the high-value parts of the enterprise ChatGPT browser experience locall
 - Bind a staged diff to its registered repo and Git HEAD so approval is not reusable after source state changes.
 - Treat obvious secrets and sensitive credential files as non-egressable; local-only retrieval is allowed where appropriate.
 - Keep assistant state out of Git using local `.git/info/exclude` rather than modifying shared repository rules.
+- Create new projects as managed local Git repos; import existing repos in place without copying them.
+- Discover managed projects from disk at startup and persist only external imported-repo pointers.
+- Require an explicit enterprise `PORTKEY_BASE_URL`; never silently fall back to a public gateway.
 
 ## Current work
 
-v0.4 implements the first security-hardening pass: authenticated local API isolation, filesystem/egress controls and exact-diff approval binding.
+v0.5 implements persistent Git-backed project discovery/import and fail-closed Portkey configuration, while retaining the v0.4 security hardening.
 
 ## Known issues
 

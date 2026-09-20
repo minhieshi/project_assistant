@@ -45,20 +45,40 @@ type Context = { params: Promise<{ path: string[] }> };
 async function proxy(request: NextRequest, context: Context) {
   try {
     validateBrowserOrigin(request);
+  } catch (error) {
+    return Response.json({ detail: error instanceof Error ? error.message : String(error) }, { status: 403 });
+  }
+
+  let token: string;
+  try {
+    token = localToken();
+  } catch {
+    return Response.json(
+      { detail: "Local API token is unavailable. Start the FastAPI backend, then reload the page." },
+      { status: 503 },
+    );
+  }
+
+  let target: URL;
+  try {
     const { path } = await context.params;
-    const target = new URL(`${backendBase()}/api/${path.join("/")}`);
+    target = new URL(`${backendBase()}/api/${path.join("/")}`);
     request.nextUrl.searchParams.forEach((value: string, key: string) => target.searchParams.append(key, value));
+  } catch (error) {
+    return Response.json({ detail: error instanceof Error ? error.message : String(error) }, { status: 500 });
+  }
 
-    const headers = new Headers();
-    headers.set("x-project-assistant-token", localToken());
-    const contentType = request.headers.get("content-type");
-    if (contentType) headers.set("content-type", contentType);
+  const headers = new Headers();
+  headers.set("x-project-assistant-token", token);
+  const contentType = request.headers.get("content-type");
+  if (contentType) headers.set("content-type", contentType);
 
-    let body: ArrayBuffer | undefined;
-    if (!["GET", "HEAD"].includes(request.method.toUpperCase())) {
-      body = await request.arrayBuffer();
-    }
+  let body: ArrayBuffer | undefined;
+  if (!["GET", "HEAD"].includes(request.method.toUpperCase())) {
+    body = await request.arrayBuffer();
+  }
 
+  try {
     const upstream = await fetch(target, {
       method: request.method,
       headers,
@@ -72,8 +92,11 @@ async function proxy(request: NextRequest, context: Context) {
     responseHeaders.set("x-content-type-options", "nosniff");
 
     return new Response(upstream.body, { status: upstream.status, headers: responseHeaders });
-  } catch (error) {
-    return Response.json({ detail: error instanceof Error ? error.message : String(error) }, { status: 403 });
+  } catch {
+    return Response.json(
+      { detail: `FastAPI backend is unavailable at ${backendBase()}. Start project-assistant-api and reload.` },
+      { status: 502 },
+    );
   }
 }
 

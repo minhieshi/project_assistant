@@ -4,6 +4,7 @@ import type {
   ConversationSummary,
   Project,
   Proposal,
+  AppStatus,
 } from "./types";
 
 const API_BASE = "/api/backend";
@@ -26,9 +27,11 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
+  status: () => request<AppStatus>("/status"),
   projects: () => request<Project[]>("/projects"),
+  importProject: (path: string, name?: string) => request<Project>("/projects/import", { method: "POST", body: JSON.stringify({ path, name: name || null }) }),
   registerProject: (path: string) => request<Project>("/projects/register", { method: "POST", body: JSON.stringify({ path }) }),
-  createProject: (path: string, name: string) => request<Project>("/projects", { method: "POST", body: JSON.stringify({ path, name }) }),
+  createProject: (name: string) => request<Project>("/projects", { method: "POST", body: JSON.stringify({ name }) }),
   getProject: (id: string) => request<Project>(`/projects/${id}`),
   addSource: (id: string, path: string, name?: string) => request<Project>(`/projects/${id}/sources`, { method: "POST", body: JSON.stringify({ path, name: name || null }) }),
   removeSource: (id: string, name: string) => request<Project>(`/projects/${id}/sources/${encodeURIComponent(name)}`, { method: "DELETE" }),

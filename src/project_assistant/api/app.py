@@ -19,6 +19,7 @@ from .schemas import (
     ChatRequest,
     ConversationCreateRequest,
     ProjectCreateRequest,
+    ProjectImportRequest,
     ProjectPathRequest,
     ProposalRequest,
     QueryRequest,
@@ -28,7 +29,7 @@ from .schemas import (
 
 
 API_TOKEN = load_or_create_api_token()
-app = FastAPI(title="Local Project Assistant", version="0.4.0")
+app = FastAPI(title="Local Project Assistant", version="0.5.0")
 app.add_middleware(TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost", "testserver"])
 
 
@@ -56,6 +57,7 @@ def _project_info(project_id: str) -> dict:
         "id": registered.id,
         "name": config.name,
         "path": str(path),
+        "kind": registered.kind,
         "sources": [
             {"name": source.name, "path": str(Path(source.path).expanduser().resolve())}
             for source in config.resolved_sources(path)
@@ -87,7 +89,26 @@ def _sse(event: str, payload: dict | str) -> str:
 
 @app.get("/health")
 def health() -> dict:
-    return {"status": "ok", "version": "0.4.0"}
+    return {"status": "ok", "version": "0.5.0"}
+
+
+@app.get("/api/status")
+def status() -> dict:
+    # Project discovery must remain usable even when Portkey is not yet configured.
+    from ..config import PortkeySettings
+
+    settings = PortkeySettings.from_env()
+    return {
+        "version": "0.5.0",
+        "projects_root": str(registry.projects_root),
+        "portkey": {
+            "base_url": settings.base_url,
+            "base_url_configured": bool(settings.base_url),
+            "api_key_configured": bool(settings.api_key),
+            "chat_model": settings.chat_model,
+            "embedding_model_configured": bool(settings.embedding_model),
+        },
+    }
 
 
 @app.get("/api/projects")
@@ -95,19 +116,30 @@ def list_projects() -> list[dict]:
     return [_project_info(project.id) for project in registry.list()]
 
 
-@app.post("/api/projects/register")
-def register_project(body: ProjectPathRequest) -> dict:
+@app.post("/api/projects")
+def create_project(body: ProjectCreateRequest) -> dict:
     try:
-        project = registry.register(Path(body.path))
+        project = registry.create(body.name)
         return _project_info(project.id)
     except Exception as exc:
         raise _error(exc)
 
 
-@app.post("/api/projects")
-def create_project(body: ProjectCreateRequest) -> dict:
+@app.post("/api/projects/import")
+def import_project(body: ProjectImportRequest) -> dict:
     try:
-        project = registry.create(Path(body.path), body.name)
+        project = registry.import_repo(Path(body.path), body.name)
+        return _project_info(project.id)
+    except Exception as exc:
+        raise _error(exc)
+
+
+# Compatibility endpoint for v0.4 clients. Registration now means importing
+# an existing Git repository.
+@app.post("/api/projects/register")
+def register_project(body: ProjectPathRequest) -> dict:
+    try:
+        project = registry.import_repo(Path(body.path))
         return _project_info(project.id)
     except Exception as exc:
         raise _error(exc)

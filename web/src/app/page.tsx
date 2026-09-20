@@ -9,6 +9,7 @@ import type {
   ConversationSummary,
   Project,
   Proposal,
+  AppStatus,
 } from "@/lib/types";
 
 function timeLabel(value?: string | null) {
@@ -19,6 +20,7 @@ function timeLabel(value?: string | null) {
 
 export default function Home() {
   const [projects, setProjects] = useState<Project[]>([]);
+  const [appStatus, setAppStatus] = useState<AppStatus | null>(null);
   const [projectId, setProjectId] = useState<string>("");
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
   const [conversationId, setConversationId] = useState<string>("");
@@ -31,7 +33,8 @@ export default function Home() {
   const [streamingText, setStreamingText] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const [registerPath, setRegisterPath] = useState("");
+  const [importPath, setImportPath] = useState("");
+  const [importName, setImportName] = useState("");
   const [newProjectName, setNewProjectName] = useState("");
   const [newConversationTitle, setNewConversationTitle] = useState("");
   const [sourcePath, setSourcePath] = useState("");
@@ -60,7 +63,7 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
-    loadProjects().catch((e) => setError(String(e)));
+    Promise.all([loadProjects(), api.status().then(setAppStatus)]).catch((e) => setError(String(e)));
   }, [loadProjects]);
 
   useEffect(() => {
@@ -88,17 +91,29 @@ export default function Home() {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [conversation?.entries.length, streamingText]);
 
-  async function registerProject(event: FormEvent) {
+  async function createProject(event: FormEvent) {
     event.preventDefault();
-    if (!registerPath.trim()) return;
+    if (!newProjectName.trim()) return;
     setBusy(true); setError("");
     try {
-      const project = newProjectName.trim()
-        ? await api.createProject(registerPath.trim(), newProjectName.trim())
-        : await api.registerProject(registerPath.trim());
-      setRegisterPath(""); setNewProjectName("");
+      const project = await api.createProject(newProjectName.trim());
+      setNewProjectName("");
       await loadProjects();
       setProjectId(project.id);
+      setTab("project");
+    } catch (e) { setError(String(e)); } finally { setBusy(false); }
+  }
+
+  async function importProject(event: FormEvent) {
+    event.preventDefault();
+    if (!importPath.trim()) return;
+    setBusy(true); setError("");
+    try {
+      const project = await api.importProject(importPath.trim(), importName.trim() || undefined);
+      setImportPath(""); setImportName("");
+      await loadProjects();
+      setProjectId(project.id);
+      setTab("project");
     } catch (e) { setError(String(e)); } finally { setBusy(false); }
   }
 
@@ -180,19 +195,27 @@ export default function Home() {
   return (
     <div className="app-shell">
       <aside className="sidebar">
-        <div className="brand">Project Assistant <span className="small">v0.4</span></div>
+        <div className="brand">Project Assistant <span className="small">v0.5</span></div>
+        {appStatus && <div className="notice" style={{ marginBottom: 12 }}>Projects: {appStatus.projects_root}<br />Portkey: {appStatus.portkey.base_url_configured ? "URL configured" : "URL missing"}</div>}
 
         <div className="section-title">Projects</div>
         {projects.map((project) => (
           <button key={project.id} className={`nav-item ${project.id === projectId ? "active" : ""}`} onClick={() => setProjectId(project.id)} title={project.path}>
-            {project.name}
+            {project.name} <span className="small">· {project.kind}</span>
           </button>
         ))}
 
-        <form className="form-stack" onSubmit={registerProject} style={{ marginTop: 10 }}>
-          <input className="input" value={registerPath} onChange={(e) => setRegisterPath(e.target.value)} placeholder="Local project path" />
-          <input className="input" value={newProjectName} onChange={(e) => setNewProjectName(e.target.value)} placeholder="Name (only for new project)" />
-          <button className="btn" disabled={busy || !registerPath.trim()}>{newProjectName.trim() ? "Create project" : "Register existing"}</button>
+        {projects.length === 0 && <div className="notice" style={{ marginBottom: 10 }}>No projects found yet. Create a managed project or import an existing Git repo.</div>}
+
+        <form className="form-stack" onSubmit={createProject} style={{ marginTop: 10 }}>
+          <input className="input" value={newProjectName} onChange={(e) => setNewProjectName(e.target.value)} placeholder="New project name" />
+          <button className="btn primary" disabled={busy || !newProjectName.trim()}>+ Create project repo</button>
+        </form>
+
+        <form className="form-stack" onSubmit={importProject} style={{ marginTop: 10 }}>
+          <input className="input" value={importPath} onChange={(e) => setImportPath(e.target.value)} placeholder="/absolute/path/to/existing/git/repo" />
+          <input className="input" value={importName} onChange={(e) => setImportName(e.target.value)} placeholder="Optional project name" />
+          <button className="btn" disabled={busy || !importPath.trim()}>Import Git repo</button>
         </form>
 
         {projectId && <>
@@ -287,7 +310,7 @@ function ProjectPanel(props: {
   if (!project) return <div className="empty">Select a project.</div>;
   return <section className="chat-scroll">
     <h2 style={{ marginTop: 0 }}>Project</h2>
-    <div className="card"><h3>Project directory</h3><div className="path">{project.path}</div></div>
+    <div className="card"><h3>Project repository</h3><div className="small">{project.kind === "managed" ? "Managed local Git repo" : "Imported existing Git repo"}</div><div className="path" style={{ marginTop: 6 }}>{project.path}</div></div>
     <div className="row" style={{ justifyContent: "space-between", marginTop: 24 }}><h3>Source repositories</h3><button className="btn" onClick={props.indexProject} disabled={props.busy}>Reindex changed files</button></div>
     <div className="source-list">
       {project.sources.length === 0 && <div className="notice">No external source repos registered yet.</div>}

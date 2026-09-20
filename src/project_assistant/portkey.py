@@ -34,6 +34,8 @@ class SafeEmbeddings:
 
 def get_embedding_function(settings: PortkeySettings):
     """Return Portkey embeddings wrapped in a local pre-egress policy."""
+    if not settings.base_url:
+        raise RuntimeError("PORTKEY_BASE_URL is not configured. Project browsing remains available, but remote embedding is disabled until an approved enterprise Portkey URL is set.")
     if not settings.embedding_model:
         raise RuntimeError("PORTKEY_EMBEDDING_MODEL is not configured")
 
@@ -54,6 +56,8 @@ class PortkeyChatModel:
     policy: EgressPolicy = EgressPolicy()
 
     def _client(self):
+        if not self.settings.base_url:
+            raise RuntimeError("PORTKEY_BASE_URL is not configured. Remote GPT inference is disabled until an approved enterprise Portkey URL is set.")
         from openai import OpenAI
 
         return OpenAI(

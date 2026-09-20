@@ -1,4 +1,4 @@
-# Local Project Assistant — v0.4
+# Local Project Assistant — v0.5
 
 A local-first engineering workbench for source-heavy enterprise work: persistent Markdown conversations, multi-repo RAG, deterministic knowledge graph, context compilation and two-stage approval-gated code changes.
 
@@ -12,7 +12,7 @@ Next.js 127.0.0.1:3000
 FastAPI 127.0.0.1:8000
   |
   +-- Markdown conversation ledger
-  +-- project/repo registry
+  +-- persistent Git-backed project discovery
   +-- context compiler
   +-- SQLite FTS5 exact/lexical retrieval
   +-- deterministic knowledge graph
@@ -111,7 +111,7 @@ Kept local on the Mac:
 - conversation Markdown;
 - `PROJECT.md` project memory;
 - generated files, proposals, staged patches and context debug snapshots;
-- local project registry;
+- managed-project discovery state and imported-repo catalogue;
 - local API authentication token.
 
 Sent through the configured enterprise Portkey route only after the egress checks above:
@@ -161,13 +161,13 @@ Code chunks retain repo/path/language/symbol/line metadata. Git-backed repos use
 Backend:
 
 ```bash
-cd project-assistant-v0.4
+cd project-assistant-v0.5
 python -m venv .venv
 source .venv/bin/activate
 pip install -e .
 ```
 
-Configure the approved Portkey route:
+Configure the approved Portkey route before indexing/chat. Project listing and conversation browsing work without it:
 
 ```bash
 export PORTKEY_BASE_URL='https://your-approved-portkey-endpoint/v1'
@@ -223,11 +223,33 @@ http://127.0.0.1:3000
 
 FastAPI binds to `127.0.0.1:8000` by default.
 
-## First use
+## Projects and persistence
 
-Register an existing project-assistant directory, or create a new project from the left sidebar. Nothing is copied; the registry stores project paths only.
+The app now has two explicit project flows.
 
-Add source repositories under **Project**, then choose **Reindex changed files**.
+### Create project
+
+**Create project repo** asks only for a name. The backend creates a new local Git repository under:
+
+```text
+~/.project-assistant/projects/<project-slug>/
+```
+
+Override that root with `PROJECT_ASSISTANT_PROJECTS_ROOT`. No remote is created. Managed projects are discovered directly from this directory every time the backend starts, so they do not depend on process memory or a registry entry.
+
+### Import Git repo
+
+**Import Git repo** accepts the path of an existing Git repository. The repository is not copied or moved. If it is not already a Project Assistant project, local metadata is created under `.assistant/` and excluded through `.git/info/exclude`; existing tracked source files are left alone. Imported paths are persisted in:
+
+```text
+~/.project-assistant/imports.json
+```
+
+On startup, the project list is the union of discovered managed repos and valid imported repos. v0.4 `registry.json` entries are migrated automatically.
+
+Project discovery does **not** initialise Chroma or require Portkey. If `PORTKEY_BASE_URL` is missing, the UI can still open projects and conversations; indexing/chat fail closed until an explicit approved URL is configured. There is no fallback to the public Portkey URL.
+
+Add any additional source repositories under **Project**, then choose **Reindex changed files**.
 
 The indexer:
 
@@ -268,6 +290,16 @@ The latest snapshot is stored locally at:
 
 ## CLI
 
+Project management can be used without loading the RAG/model dependencies:
+
+```bash
+project-assistant projects
+project-assistant project-create 'Mainframe Platform'
+project-assistant project-import /path/to/existing/repo --name 'Existing system'
+```
+
+Project operations:
+
 ```bash
 project-assistant --project /path/to/project index
 project-assistant --project /path/to/project search 'where is IKJEFT01 invoked?'
@@ -283,8 +315,11 @@ project-assistant --project /path/to/project apply-patch <proposal-id>
 
 ## Local project layout
 
+A newly created managed project is its own local Git repo:
+
 ```text
-project/
+~/.project-assistant/projects/mainframe-platform/
+├── .git/
 ├── PROJECT.md
 ├── assistant_system.md
 └── .assistant/
@@ -301,7 +336,7 @@ project/
     └── debug/last_context.md
 ```
 
-`.assistant/` is added to the repo's local `.git/info/exclude` when a project is initialised, so local assistant state is not accidentally committed and no shared `.gitignore` change is required.
+`.assistant/` is added to the repo's local `.git/info/exclude` when a project is initialised, so local assistant state is not accidentally committed and no shared `.gitignore` change is required. For an imported code repo, `PROJECT.md` and `assistant_system.md` also live under `.assistant/` to avoid adding root-level files to an existing repository.
 
 ## Testing
 
@@ -309,7 +344,7 @@ project/
 PYTHONPATH=src python -m unittest discover -s tests -v
 ```
 
-v0.4 currently has 17 backend/core tests covering the two-stage approval gate, patch tampering, HEAD changes, secret detection, path traversal, API authentication, retrieval and graph behaviour.
+v0.5 currently has 20 backend/core tests covering the two-stage approval gate, patch tampering, HEAD changes, secret detection, path traversal, API authentication, retrieval and graph behaviour.
 
 After `npm install`:
 

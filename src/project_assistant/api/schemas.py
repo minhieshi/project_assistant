@@ -8,8 +8,12 @@ class ProjectPathRequest(BaseModel):
 
 
 class ProjectCreateRequest(BaseModel):
-    path: str
     name: str = Field(min_length=1, max_length=120)
+
+
+class ProjectImportRequest(BaseModel):
+    path: str
+    name: str | None = Field(default=None, max_length=120)
 
 
 class SourceRequest(BaseModel):

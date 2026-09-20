@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.5.0
+
+- Replaced path-first project creation with a managed-project model: creating a project now creates a local Git repo under `~/.project-assistant/projects` (configurable).
+- Added explicit existing-Git-repo import without copying or moving source code. Imported assistant metadata stays under `.assistant/`.
+- Managed projects are rediscovered from disk on every backend start; imported repos are restored from `~/.project-assistant/imports.json`.
+- Added automatic migration of valid v0.4 `registry.json` entries so existing projects reappear after upgrade.
+- Project listing/status no longer initialises Chroma or requires Portkey configuration.
+- Removed the public Portkey URL fallback: remote embeddings/inference fail closed until `PORTKEY_BASE_URL` is explicitly configured.
+- Added `/api/status` so the UI can show the projects root and Portkey setup state.
+- Split the web UI into **Create project repo** and **Import Git repo** flows and show existing projects immediately on startup.
+- Fixed proxy error semantics: origin violations are 403, missing local backend token is 503, and unreachable FastAPI is 502 instead of all failures appearing as 403.
+- Added lazy CLI project management (`projects`, `project-create`, `project-import`) that works without loading RAG dependencies.
+- Added restart/import/v0.4-migration/fail-closed Portkey regression coverage; backend/core suite is now 20 tests.
+
 ## v0.4.0
 
 - Added authenticated local API access using a user-only token; browser JavaScript no longer calls FastAPI directly.

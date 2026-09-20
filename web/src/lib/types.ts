@@ -4,6 +4,7 @@ export type Project = {
   id: string;
   name: string;
   path: string;
+  kind: "managed" | "imported";
   sources: Source[];
 };
 
@@ -54,4 +55,16 @@ export type ContextSummary = {
   graph_sources: string[];
   text?: string;
   debug_path?: string;
+};
+
+export type AppStatus = {
+  version: string;
+  projects_root: string;
+  portkey: {
+    base_url: string;
+    base_url_configured: boolean;
+    api_key_configured: boolean;
+    chat_model: string;
+    embedding_model_configured: boolean;
+  };
 };

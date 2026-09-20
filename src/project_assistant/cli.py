@@ -4,9 +4,9 @@ import argparse
 import json
 from pathlib import Path
 
-from .assistant import ProjectAssistant
 from .config import ProjectConfig, SourceRoot, init_project
 from .security import validate_source_root
+from .workspace import WorkspaceRegistry
 
 
 def _project(value: str) -> Path:
@@ -17,6 +17,15 @@ def main() -> None:
     parser = argparse.ArgumentParser(prog="project-assistant")
     parser.add_argument("--project", default=".", help="Project assistant directory")
     sub = parser.add_subparsers(dest="command", required=True)
+
+    sub.add_parser("projects", help="List discovered managed/imported projects")
+
+    p_project_create = sub.add_parser("project-create", help="Create a managed local Git-backed project")
+    p_project_create.add_argument("name")
+
+    p_project_import = sub.add_parser("project-import", help="Import an existing Git repository as a project")
+    p_project_import.add_argument("path")
+    p_project_import.add_argument("--name")
 
     p_init = sub.add_parser("init")
     p_init.add_argument("--name", required=True)
@@ -69,6 +78,22 @@ def main() -> None:
     p_context.add_argument("--conversation")
 
     args = parser.parse_args()
+
+    if args.command == "projects":
+        for project in WorkspaceRegistry().list():
+            print(f"{project.id}\t{project.kind}\t{project.name}\t{project.path}")
+        return
+
+    if args.command == "project-create":
+        project = WorkspaceRegistry().create(args.name)
+        print(project.path)
+        return
+
+    if args.command == "project-import":
+        project = WorkspaceRegistry().import_repo(Path(args.path), args.name)
+        print(project.path)
+        return
+
     project_dir = _project(args.project)
 
     if args.command == "init":
@@ -87,6 +112,9 @@ def main() -> None:
         print(f"Added source {name}: {path}")
         return
 
+    # RAG/model dependencies are loaded only for commands that actually need
+    # them. Project discovery remains available during partial configuration.
+    from .assistant import ProjectAssistant
     assistant = ProjectAssistant.build(project_dir)
 
     if args.command == "index":

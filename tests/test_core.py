@@ -261,25 +261,75 @@ class WebFoundationTests(unittest.TestCase):
             self.assertEqual(entries[0].body, "hello")
             self.assertEqual(entries[1].body, "hi")
 
-    def test_workspace_registry_stores_paths_not_project_content(self):
+    def test_managed_projects_are_git_repos_and_rediscovered_after_restart(self):
+        from project_assistant.workspace import WorkspaceRegistry
+
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / "assistant-home"
+            registry = WorkspaceRegistry(home=home)
+            created = registry.create("Mainframe Platform")
+            project = Path(created.path)
+            self.assertTrue((project / ".git").is_dir())
+            self.assertTrue((project / ".assistant/project.json").exists())
+            self.assertEqual(created.kind, "managed")
+
+            # A fresh registry instance has no process memory; it discovers the
+            # project by scanning the managed projects root.
+            restarted = WorkspaceRegistry(home=home)
+            projects = restarted.list()
+            self.assertEqual([(p.id, p.name, p.kind) for p in projects], [(created.id, "Mainframe Platform", "managed")])
+
+    def test_imported_git_repo_is_persisted_without_copying_it(self):
+        from project_assistant.workspace import WorkspaceRegistry
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home = root / "assistant-home"
+            repo = root / "existing-repo"
+            repo.mkdir()
+            subprocess.run(["git", "init", "-q", str(repo)], check=True)
+            (repo / "app.py").write_text("print('hello')\n", encoding="utf-8")
+
+            registry = WorkspaceRegistry(home=home)
+            imported = registry.import_repo(repo, "Existing system")
+            self.assertEqual(Path(imported.path), repo.resolve())
+            self.assertEqual(imported.kind, "imported")
+            # Imported code repos keep assistant metadata private under .assistant.
+            self.assertTrue((repo / ".assistant/assistant_system.md").exists())
+            self.assertTrue((repo / ".assistant/PROJECT.md").exists())
+            self.assertFalse((repo / "assistant_system.md").exists())
+
+            restarted = WorkspaceRegistry(home=home)
+            self.assertEqual(restarted.get(imported.id).path, str(repo.resolve()))
+
+    def test_v04_registry_is_migrated_so_existing_project_reappears(self):
         from project_assistant.config import init_project
         from project_assistant.workspace import WorkspaceRegistry
 
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            project = root / "project"
-            init_project(project, "Example")
-            registry_path = root / "registry.json"
-            registry = WorkspaceRegistry(registry_path)
-            registered = registry.register(project)
-            self.assertEqual(registry.get(registered.id).path, str(project.resolve()))
-            raw = json.loads(registry_path.read_text(encoding="utf-8"))
-            self.assertEqual(raw, {"projects": [{"path": str(project.resolve())}]})
+            home = root / "assistant-home"
+            home.mkdir()
+            old_project = root / "old-project"
+            init_project(old_project, "Old project")
+            (home / "registry.json").write_text(json.dumps({"projects": [{"path": str(old_project)}]}), encoding="utf-8")
+
+            registry = WorkspaceRegistry(home=home)
+            projects = registry.list()
+            self.assertTrue(any(p.path == str(old_project.resolve()) for p in projects))
+            self.assertTrue((home / "imports.json").exists())
 
     def test_api_app_imports_without_initialising_rag(self):
         from project_assistant.api.app import app
 
-        self.assertEqual(app.version, "0.4.0")
+        self.assertEqual(app.version, "0.5.0")
+
+    def test_portkey_url_is_explicit_and_does_not_default_public(self):
+        from project_assistant.config import PortkeySettings
+
+        with patch.dict(os.environ, {"PORTKEY_BASE_URL": ""}, clear=False):
+            settings = PortkeySettings.from_env()
+            self.assertEqual(settings.base_url, "")
 
     def test_api_requires_local_token(self):
         from fastapi.testclient import TestClient

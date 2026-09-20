@@ -107,7 +107,7 @@ class PortkeySettings:
         if not isinstance(extra, dict):
             raise ValueError("PORTKEY_EXTRA_HEADERS_JSON must be a JSON object")
         return cls(
-            base_url=os.getenv("PORTKEY_BASE_URL", "https://api.portkey.ai/v1").rstrip("/"),
+            base_url=os.getenv("PORTKEY_BASE_URL", "").rstrip("/"),
             api_key=os.getenv("PORTKEY_API_KEY", ""),
             chat_model=os.getenv("PORTKEY_CHAT_MODEL", "gpt-5.6"),
             embedding_model=os.getenv("PORTKEY_EMBEDDING_MODEL", ""),
@@ -151,7 +151,7 @@ def _exclude_assistant_state_from_git(project_dir: Path) -> None:
         fh.write(".assistant/\n")
 
 
-def init_project(project_dir: Path, name: str) -> ProjectConfig:
+def init_project(project_dir: Path, name: str, *, internal_metadata: bool = False) -> ProjectConfig:
     project_dir = project_dir.expanduser().resolve()
     private_dir(project_dir / ".assistant")
     private_dir(project_dir / ".assistant/conversations")
@@ -161,13 +161,18 @@ def init_project(project_dir: Path, name: str) -> ProjectConfig:
     private_dir(project_dir / ".assistant/debug")
 
     config = ProjectConfig(name=name)
+    if internal_metadata:
+        config.system_prompt_path = ".assistant/assistant_system.md"
+        config.project_memory_path = ".assistant/PROJECT.md"
     config.save(project_dir)
 
-    prompt = project_dir / "assistant_system.md"
+    prompt = config.project_path(project_dir, config.system_prompt_path)
     if not prompt.exists():
         prompt.write_text(DEFAULT_SYSTEM_PROMPT, encoding="utf-8")
+    if internal_metadata:
+        private_file(prompt)
 
-    memory = project_dir / "PROJECT.md"
+    memory = config.project_path(project_dir, config.project_memory_path)
     if not memory.exists():
         memory.write_text(
             f"# {name}\n\n"
@@ -178,6 +183,8 @@ def init_project(project_dir: Path, name: str) -> ProjectConfig:
             "## Known issues\n\n",
             encoding="utf-8",
         )
+    if internal_metadata:
+        private_file(memory)
 
     _exclude_assistant_state_from_git(project_dir)
     return config
