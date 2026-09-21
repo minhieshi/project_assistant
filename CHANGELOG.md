@@ -1,3 +1,11 @@
+## v0.6.7.3
+
+- Fixed Project-tab vertical scrolling when many source repositories/index rows make the page taller than the viewport.
+- Added the missing `min-height: 0` constraints to the grid/flex containers so the bounded project panel can actually scroll.
+- Sidebar and inspector now use independent vertical scrolling with horizontal overflow suppressed.
+- Added stable scrollbar space and a small bottom spacer so the Add source repo controls remain comfortable to reach.
+- No indexing, RAG, Portkey, or persistence behaviour changes.
+
 ## v0.6.7.2
 
 - Fixed `NameError: SKIP_DIRS is not defined` in the non-Git filesystem walker introduced by v0.6.7.

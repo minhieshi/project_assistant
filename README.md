@@ -1,4 +1,4 @@
-# Local Project Assistant — v0.6.7
+# Local Project Assistant — v0.6.7.3
 
 A local-first engineering workbench for source-heavy enterprise work: persistent Markdown conversations, multi-repo RAG, deterministic knowledge graph, context compilation and two-stage approval-gated code changes.
 
@@ -161,7 +161,7 @@ Code chunks retain repo/path/language/symbol/line metadata. Git-backed repos use
 Backend:
 
 ```bash
-cd project-assistant-v0.6.7
+cd project-assistant-v0.6.7.3
 python -m venv .venv
 source .venv/bin/activate
 pip install -e .

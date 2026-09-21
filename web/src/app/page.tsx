@@ -267,7 +267,7 @@ export default function Home() {
   return (
     <div className="app-shell">
       <aside className="sidebar">
-        <div className="brand">Project Assistant <span className="small">v0.6.7</span></div>
+        <div className="brand">Project Assistant <span className="small">v0.6.7.3</span></div>
         {appStatus && <div className="notice" style={{ marginBottom: 12 }}>Projects: {appStatus.projects_root}<br />Portkey: {appStatus.portkey.base_url_configured ? "URL configured" : "URL missing"}</div>}
 
         <div className="section-title">Projects</div>
@@ -462,6 +462,7 @@ function ProjectPanel(props: {
       <input className="input" value={props.sourceName} onChange={(e) => props.setSourceName(e.target.value)} placeholder="Optional repo name" />
       <button className="btn primary" disabled={props.busy || !props.sourcePath.trim()}>Add source repo</button>
     </form>
+    <div className="project-scroll-end" aria-hidden="true" />
   </section>;
 }
 
