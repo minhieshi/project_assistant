@@ -270,7 +270,7 @@ export default function Home() {
   return (
     <div className="app-shell">
       <aside className="sidebar">
-        <div className="brand">Project Assistant <span className="small">v0.7.3</span></div>
+        <div className="brand">Project Assistant <span className="small">v0.7.4</span></div>
         {appStatus && <div className="notice" style={{ marginBottom: 12 }}>Projects: {appStatus.projects_root}<br />Portkey: {appStatus.portkey.base_url_configured ? "URL configured" : "URL missing"}</div>}
 
         <div className="section-title">Projects</div>
@@ -437,6 +437,10 @@ function ProjectPanel(props: {
       <h3>Project repository</h3>
       <div className="small">{project.kind === "managed" ? "Managed local Git repo" : "Imported existing Git repo"}</div>
       <div className="path" style={{ marginTop: 6 }}>{project.path}</div>
+    </div>
+
+    <div className="notice" style={{ marginTop: 12 }}>
+      <strong>Retrieval access:</strong> read-only access is automatically approved for this project repo and all {project.sources.length} registered source {project.sources.length === 1 ? "root" : "roots"}. The retrieval agent can list, find, grep and read live files across them without write or arbitrary shell access.
     </div>
 
     <div className="card" style={{ marginTop: 12 }}>

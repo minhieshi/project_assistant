@@ -1,3 +1,12 @@
+## 0.7.4 — Live source exploration and multi-round retrieval
+
+- `read_file` / `read_file_range` now read the current filesystem directly from the Project Assistant repo or any registered external source root; they no longer depend on a file first being recovered through the lexical index.
+- Added fixed read-only tools: `list_files`, `find_files`, `grep_project`, `file_metadata`, `git_status`, `git_diff`, `git_log`, and `git_show`. No arbitrary shell execution is exposed.
+- Added a bounded retrieve → inspect → retrieve-again loop (default 3 rounds, 6 actions per round), with only two remote semantic searches allowed across the entire loop.
+- All live paths are source-name + relative-path scoped, symlink escapes are rejected, and high-confidence secret/binary/archive content is prevented from entering outbound context.
+- Live file/range/Git-show evidence is prioritised in final context so later dependency reads are not displaced by earlier broad RAG hits.
+- Project UI now states that read-only retrieval is automatically approved across the project repo and registered source roots.
+
 ## 0.7.3 — Streamlined approval checklist
 
 - Added selectable plan-action checkboxes with a single **Approve selected actions** button.

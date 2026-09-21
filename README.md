@@ -1,4 +1,4 @@
-# Local Project Assistant — v0.7.3
+# Local Project Assistant — v0.7.4
 
 ### Approval workflow
 
@@ -31,9 +31,9 @@ Approved Portkey gateway
 
 The CLI remains available and uses the same project state.
 
-## Retrieval 2.0 (v0.7)
+## Retrieval 2.1 — live registered-source exploration (v0.7.4)
 
-Normal chat now performs iterative project retrieval automatically; you do not need to press **Compile context** first. The pipeline is:
+Normal chat and change proposals perform iterative project retrieval automatically; you do not need to press **Compile context** first. The retrieval agent now has standing read-only access to the Project Assistant repo **and every registered external source repo/folder**, including files that were not surfaced by the initial RAG result. The pipeline is:
 
 ```text
 current question + recent conversation
@@ -49,10 +49,14 @@ initial coherent source map
         ↓
 GPT-5.6 retrieval planner
         ↓
+up to 3 bounded retrieve → inspect rounds
+        ↓
 read-only local tools
   search_project / search_exact
   find_symbol / find_references
-  read_file / read_file_range
+  list_files / find_files / grep_project
+  file_metadata / read_file / read_file_range
+  git_status / git_diff / git_log / git_show
         ↓
 adjacent + dependency + same-file expansion
         ↓
@@ -61,13 +65,15 @@ final ~30 high-signal source chunks
 GPT-5.6 final answer
 ```
 
-The retrieval planner cannot execute shell commands or modify files. Its tools operate only over content already registered/indexed by Project Assistant. `RETRIEVAL_AGENT_ENABLED=0` disables the planning pass if you need to compare behaviour or reduce latency. `CONTEXT_MAX_TOKENS` defaults to `48000`.
+The retrieval planner cannot execute arbitrary shell commands or modify files. File/list/grep/Git operations are fixed backend functions scoped to the Project Assistant repo and explicitly registered source roots; direct file reads use the **live filesystem**, so the file does not have to have appeared in the vector index first. Symlink escapes, binary/archive reads and high-confidence secret material remain blocked.
+
+The default loop allows 3 planning rounds with up to 6 requested actions per round. Remote semantic `search_project` actions remain capped to 2 across the whole loop; file discovery, grep, direct reads, symbol/reference lookup and Git inspection are local. Configure with `RETRIEVAL_AGENT_MAX_ROUNDS` and `RETRIEVAL_AGENT_MAX_ACTIONS`, or set `RETRIEVAL_AGENT_ENABLED=0` to disable the planning loop. `CONTEXT_MAX_TOKENS` defaults to `48000`.
 
 The context inspector now shows the actual retrieval query variants and any planner-requested read-only operations, in addition to routed repos and source chunks. Repository routing is advisory: a strong hit from a lower-ranked repo can still enter context.
 
 ### Upgrading an already-indexed project
 
-You **do not need to re-embed the repositories** for Retrieval 2.0. Run **Reindex changed files** once after upgrading. v0.7 has a separate graph-parser version, so unchanged text/code keeps its existing Chroma vectors while the local knowledge graph is refreshed. This adds Java classes, methods, imports and approximate call relationships to graph expansion without paying the embedding cost again.
+You **do not need to re-embed repositories for v0.7.4**. The live source tools read from the registered filesystem roots directly and use your existing RAG/FTS/graph data as the initial retrieval layer. If you have already performed the v0.7 graph refresh, simply install/restart this release.
 
 
 ## Security model added in v0.4

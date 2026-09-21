@@ -69,6 +69,7 @@ class ProjectAssistant:
         seed = self.compiler.initial_retrieval(query, conversation_id)
         extra_hits = []
         actions: tuple[str, ...] = ()
+        agent_warnings: tuple[str, ...] = ()
         enabled = os.getenv("RETRIEVAL_AGENT_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
         if agentic and enabled:
             recent = self.conversations.recent_text(conversation_id, max_chars=18000) if conversation_id else ""
@@ -78,21 +79,26 @@ class ProjectAssistant:
                     recent,
                     list(seed.initial_hits),
                     routed_repos=[route.name for route in seed.routes],
+                    max_actions=int(os.getenv("RETRIEVAL_AGENT_MAX_ACTIONS", "6")),
+                    max_rounds=int(os.getenv("RETRIEVAL_AGENT_MAX_ROUNDS", "3")),
                 )
                 extra_hits = list(result.hits)
                 actions = tuple(action.label() for action in result.actions)
+                agent_warnings = result.warnings
             except Exception:
                 # The planner is an optional retrieval enhancement. If the remote
                 # chat route is temporarily unavailable, answer from deterministic
                 # local retrieval rather than failing before the final answer path.
                 extra_hits = []
                 actions = ()
+                agent_warnings = ()
         return self.compiler.compile(
             query,
             conversation_id,
             seed=seed,
             supplemental_hits=extra_hits,
             retrieval_actions=actions,
+            retrieval_warnings=agent_warnings,
         )
 
     def _prepare_answer(self, conversation_id: str, user_text: str):
@@ -101,10 +107,11 @@ class ProjectAssistant:
         self.compiler.write_debug_snapshot(context)
         retrieval_rules = (
             "PROJECT RETRIEVAL — IMPORTANT\n"
-            "- Project Assistant has already performed conversation-aware RAG and an additional read-only retrieval-planning pass.\n"
+            "- Project Assistant has already performed conversation-aware RAG plus bounded multi-round read-only exploration across the project repo and all registered source roots.\n"
+            "- Retrieval may include live filesystem reads, grep/file discovery, symbol/reference lookup and read-only Git inspection.\n"
             "- Treat retrieved source as the primary project evidence.\n"
-            "- Do not ask the user to paste an indexed file/playbook merely because it was not in the first few snippets.\n"
-            "- If a required artefact still was not surfaced after retrieval, say which artefact/search is missing rather than pretending it is unavailable to the project.\n"
+            "- Do not ask the user to paste a file/playbook that is in a registered source root merely because it was not in the initial RAG snippets.\n"
+            "- If a required artefact still was not surfaced after the bounded retrieval rounds, identify the exact missing artefact/search rather than pretending the project has no access to it.\n"
             "- Never claim you read a file unless it appears in retrieved context."
         )
         system = self._system_prompt() + "\n\n" + CHANGE_CONTROL + "\n\n" + retrieval_rules

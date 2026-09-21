@@ -112,6 +112,7 @@ class ContextCompiler:
         seed: RetrievalSeed | None = None,
         supplemental_hits: Iterable[SearchHit] = (),
         retrieval_actions: Iterable[str] = (),
+        retrieval_warnings: Iterable[str] = (),
     ) -> CompiledContext:
         memory = self._read_optional(self.config.project_path(self.project_dir, self.config.project_memory_path))
         recent = self.conversations.recent_text(conversation_id, max_chars=24000) if conversation_id else ""
@@ -152,7 +153,7 @@ class ContextCompiler:
             routed_repos=tuple(route.name for route in seed.routes),
             retrieval_queries=seed.queries,
             retrieval_actions=action_labels,
-            retrieval_warnings=seed.warnings,
+            retrieval_warnings=tuple(dict.fromkeys((*seed.warnings, *tuple(retrieval_warnings)))),
             retrieved_hits=tuple(rag_hits),
         )
 
@@ -289,7 +290,14 @@ class ContextCompiler:
     def _merge_priority(self, direct: list[SearchHit], supplemental: list[SearchHit]) -> list[SearchHit]:
         ordered: list[SearchHit] = []
         seen: set[str] = set()
-        for hit in supplemental[:24] + direct:
+        # A later live filesystem read is stronger evidence than an earlier broad
+        # search/listing. Put direct file/range/Git-show reads first so iterative
+        # retrieval cannot successfully fetch a dependency and then lose it to
+        # the final context limit.
+        high_value_channels = {"live-read", "live-read-range", "git-show", "git-diff"}
+        live = [hit for hit in supplemental if high_value_channels.intersection(hit.channels)]
+        other = [hit for hit in supplemental if not high_value_channels.intersection(hit.channels)]
+        for hit in live[:18] + other[:30] + direct:
             key = self._hit_key(hit)
             if key in seen:
                 continue

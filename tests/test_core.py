@@ -44,7 +44,7 @@ class CoreTests(unittest.TestCase):
     def test_change_gate_requires_two_explicit_approvals(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            repo = self._git_repo(root)
+            repo = CoreTests._git_repo(root)
             patch_path = self._patch(root)
             store = ConversationStore(root / ".assistant/conversations")
             conv = store.create("Patch gate")
@@ -422,7 +422,7 @@ class WebFoundationTests(unittest.TestCase):
     def test_api_app_imports_without_initialising_rag(self):
         from project_assistant.api.app import app
 
-        self.assertEqual(app.version, "0.7.3")
+        self.assertEqual(app.version, "0.7.4")
 
     def test_portkey_url_is_explicit_and_does_not_default_public(self):
         from project_assistant.config import PortkeySettings
@@ -916,3 +916,129 @@ class RetrievalFailureTests(unittest.TestCase):
         from project_assistant.portkey import PortkeyEmbeddings
         detail = PortkeyEmbeddings._safe_http_detail("<html><body><h1>502 Bad Gateway</h1></body></html>")
         self.assertEqual(detail, "502 Bad Gateway")
+
+
+class LiveSourceAccessTests(unittest.TestCase):
+    def test_registered_external_source_can_be_read_without_index_lookup(self):
+        from types import SimpleNamespace
+        from project_assistant.config import ProjectConfig, SourceRoot
+        from project_assistant.retrieval_agent import RetrievalAction, RetrievalToolkit
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            project = root / "assistant-project"; project.mkdir()
+            external = root / "java-platform"; external.mkdir()
+            source = external / "src" / "AssetManager.java"
+            source.parent.mkdir(parents=True)
+            source.write_text("class AssetManager { String lookup() { return \"live\"; } }\n", encoding="utf-8")
+            config = ProjectConfig(name="x", source_roots=[SourceRoot("java-platform", str(external))])
+            toolkit = RetrievalToolkit(project, config, SimpleNamespace(), SimpleNamespace())  # type: ignore[arg-type]
+
+            hits = toolkit.execute(RetrievalAction("read_file", target="src/AssetManager.java", repo="java-platform"))
+            self.assertEqual(len(hits), 1)
+            self.assertIn('return "live"', hits[0].text)
+            self.assertEqual(hits[0].metadata["repo"], "java-platform")
+            self.assertIn("live-read", hits[0].channels)
+
+    def test_registered_plain_folder_grep_finds_unindexed_source(self):
+        from types import SimpleNamespace
+        from project_assistant.config import ProjectConfig, SourceRoot
+        from project_assistant.retrieval_agent import RetrievalAction, RetrievalToolkit
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            project = root / "assistant-project"; project.mkdir()
+            external = root / "jcl-library"; external.mkdir()
+            (external / "RUNJOB.jcl").write_text("//STEP1 EXEC PGM=IKJEFT01\n", encoding="utf-8")
+            config = ProjectConfig(name="x", source_roots=[SourceRoot("jcl-library", str(external))])
+            toolkit = RetrievalToolkit(project, config, SimpleNamespace(), SimpleNamespace())  # type: ignore[arg-type]
+
+            hits = toolkit.execute(RetrievalAction("grep_project", query="IKJEFT01", repo="jcl-library"))
+            self.assertTrue(hits)
+            self.assertIn("jcl-library:RUNJOB.jcl:1", hits[0].text)
+
+    def test_live_read_rejects_symlink_escape(self):
+        from types import SimpleNamespace
+        from project_assistant.config import ProjectConfig, SourceRoot
+        from project_assistant.retrieval_agent import RetrievalAction, RetrievalToolkit
+        from project_assistant.security import SecurityError
+
+        if not hasattr(os, "symlink"):
+            self.skipTest("symlinks unsupported")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            project = root / "assistant-project"; project.mkdir()
+            external = root / "source"; external.mkdir()
+            outside = root / "outside.txt"; outside.write_text("do not read\n", encoding="utf-8")
+            link = external / "escape.txt"
+            try:
+                link.symlink_to(outside)
+            except OSError:
+                self.skipTest("symlink creation unavailable")
+            config = ProjectConfig(name="x", source_roots=[SourceRoot("source", str(external))])
+            toolkit = RetrievalToolkit(project, config, SimpleNamespace(), SimpleNamespace())  # type: ignore[arg-type]
+            with self.assertRaises(SecurityError):
+                toolkit.execute(RetrievalAction("read_file", target="escape.txt", repo="source"))
+
+    def test_controlled_git_reads_use_registered_repo_only(self):
+        from project_assistant.config import ProjectConfig, SourceRoot
+        from project_assistant.source_access import RegisteredSourceAccess
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            project = root / "assistant-project"; project.mkdir()
+            repo = CoreTests._git_repo(root)
+            (repo / "value.txt").write_text("changed\n", encoding="utf-8")
+            access = RegisteredSourceAccess(project, ProjectConfig(name="x", source_roots=[SourceRoot("repo", str(repo))]))
+            status = access.git_status("repo")[0].text
+            diff = access.git_diff("repo")[0].text
+            self.assertIn("value.txt", status)
+            self.assertIn("-old", diff)
+            self.assertIn("+changed", diff)
+
+
+class MultiRoundRetrievalTests(unittest.TestCase):
+    def test_agent_can_retrieve_across_multiple_rounds_until_sufficient(self):
+        from project_assistant.retrieval_agent import RetrievalAgent
+        from project_assistant.retrieval_types import SearchHit
+
+        class FakeModel:
+            def __init__(self):
+                self.calls = 0
+            def complete(self, system, user):
+                self.calls += 1
+                if self.calls == 1:
+                    return json.dumps({"sufficient": False, "actions": [
+                        {"tool": "read_file", "repo": "java", "target": "AssetManager.java"}
+                    ]})
+                if self.calls == 2:
+                    self.assert_source_visible = "AssetManager.java" in user
+                    return json.dumps({"sufficient": False, "actions": [
+                        {"tool": "grep_project", "repo": "ansible", "query": "createAsset"}
+                    ]})
+                return json.dumps({"sufficient": True, "actions": []})
+
+        class FakeToolkit:
+            def __init__(self):
+                self.calls = []
+            def source_names(self):
+                return ("project", "java", "ansible")
+            def execute(self, action, limit=12):
+                self.calls.append(action.tool)
+                rel = action.target or ("grep-results" if action.tool == "grep_project" else action.query)
+                return [SearchHit(
+                    f"evidence from {rel}",
+                    {"id": f"{action.tool}:{rel}", "repo": action.repo or "project", "relative_path": rel, "egress_allowed": True},
+                    1.0,
+                    (action.tool,),
+                )]
+
+        model = FakeModel()
+        toolkit = FakeToolkit()
+        agent = RetrievalAgent(model, toolkit)  # type: ignore[arg-type]
+        result = agent.plan_and_retrieve("fix it", "recent", [], [], max_rounds=3)
+        self.assertEqual(toolkit.calls, ["read_file", "grep_project"])
+        self.assertEqual(result.rounds, 3)
+        self.assertEqual([action.round_no for action in result.actions], [1, 2])
+        self.assertTrue(getattr(model, "assert_source_visible", False))
+        self.assertEqual(len(result.hits), 2)

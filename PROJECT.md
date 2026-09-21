@@ -108,3 +108,8 @@ Removed Project Assistant's `whisper.cpp` integration. Dictation is now an opera
 ## v0.7.3 — Streamlined approvals
 
 The web UI now presents approval scopes as checklists. Plan approval persists only the selected actions; the exact staged diff remains separately approved and cryptographically bound before application.
+
+
+## v0.7.4 — Live source exploration
+
+Approved read-only retrieval now spans the Project Assistant repo and every registered external source root, whether Git-backed or a plain folder. GPT can iterate for up to three bounded retrieval rounds using local file discovery, grep, live file/range reads, symbol/reference search and controlled read-only Git inspection. Source mutation remains separately approval-gated and no arbitrary shell is exposed.
