@@ -86,6 +86,25 @@ class RetrievalToolkit:
     def source_names(self) -> tuple[str, ...]:
         return self.sources.source_names()
 
+    def live_repository_state_text(self) -> str:
+        """Return authoritative live Git state for every registered source root.
+
+        This is intentionally independent of indexed/RAG metadata. Change planning
+        must never depend on retrieval having surfaced the correct repository before
+        current HEAD/working-tree state is available.
+        """
+        lines: list[str] = []
+        for state in self.sources.repository_states():
+            repo = str(state.get("repo") or "unknown")
+            if not state.get("is_git"):
+                lines.append(f"- {repo}: Git not applicable (non-Git registered source).")
+                continue
+            branch = state.get("branch") or "(detached/no branch)"
+            head = state.get("head") or "unavailable"
+            working_tree = state.get("working_tree") or "unknown"
+            lines.append(f"- {repo}: branch={branch}; HEAD={head}; working_tree={working_tree}")
+        return "\n".join(lines) or "No registered source roots."
+
     def execute(self, action: RetrievalAction, limit: int = 12) -> list[SearchHit]:
         target_repo, target_value = self._split_repo_target(action.target or action.query, action.repo)
         repos = {target_repo} if target_repo else None
@@ -177,11 +196,14 @@ class RetrievalAgent:
         routed_repos: Iterable[str] = (),
         max_actions: int = 6,
         max_rounds: int = 3,
+        purpose: str = "answer",
     ) -> RetrievalAgentResult:
         accumulated = self._dedupe([hit for hit in initial_hits if outbound_metadata_allowed(hit.metadata)])
         routed = ", ".join(routed_repos) or "not constrained"
         source_names_fn = getattr(self.toolkit, "source_names", None)
         source_roots = ", ".join(source_names_fn()) if callable(source_names_fn) else "project and registered sources"
+        live_state_fn = getattr(self.toolkit, "live_repository_state_text", None)
+        live_repository_state = live_state_fn() if purpose == "change" and callable(live_state_fn) else ""
         all_hits: list[SearchHit] = []
         executed: list[RetrievalAction] = []
         raw_rounds: list[str] = []
@@ -194,18 +216,20 @@ class RetrievalAgent:
             rounds_used = round_no
             source_map = self._source_map(accumulated[-32:])
             prior_actions = "\n".join(f"- {action.label()}" for action in executed[-12:]) or "- none"
-            system = self._planner_system(max_actions)
+            system = self._planner_system(max_actions, purpose=purpose)
             user = (
                 f"CURRENT REQUEST:\n{query}\n\n"
                 f"RECENT CONVERSATION:\n{recent_conversation[-7000:]}\n\n"
                 f"REGISTERED READ-ONLY SOURCE ROOTS:\n{source_roots}\n\n"
-                f"ROUTED REPOSITORIES (boosts, not hard limits):\n{routed}\n\n"
+                + (f"AUTHORITATIVE LIVE REPOSITORY STATE (all registered roots; independent of RAG):\n{live_repository_state}\n\n" if live_repository_state else "")
+                + f"ROUTED REPOSITORIES (boosts, not hard limits):\n{routed}\n\n"
                 f"RETRIEVAL ROUND: {round_no} of {max_rounds}\n\n"
                 f"ALREADY EXECUTED ACTIONS:\n{prior_actions}\n\n"
                 f"CURRENT SOURCE MAP:\n{source_map}\n\n"
                 "Assess whether you have enough implementation/configuration/test context to answer or propose the change accurately. "
                 "If not, request the next read-only operations. Follow dependencies across registered source roots. "
-                "Do not ask the user to paste a file that can be found/read from a registered source root."
+                "Do not ask the user to paste a file that can be found/read from a registered source root. "
+                + ("For change planning, do not declare sufficient until likely target files have been read live. For Git-backed target files, compare the working-tree file with git_show(HEAD, path) when material to the change. Live repository state above is authoritative; indexed Git metadata is historical only. " if purpose == "change" else "")
             )
             try:
                 raw = self.model.complete(system, user)
@@ -260,7 +284,13 @@ class RetrievalAgent:
         )
 
     @staticmethod
-    def _planner_system(max_actions: int) -> str:
+    def _planner_system(max_actions: int, purpose: str = "answer") -> str:
+        change_rules = (
+            " CHANGE-MODE RULES: Current branch/HEAD/working-tree state is supplied separately from retrieval and is authoritative. "
+            "Do not use indexed Git metadata as proof of current state. Before declaring sufficient, read likely target files from the live source root; for Git-backed target files use git_show with HEAD when you need the committed version for comparison. "
+            "You are not responsible for staging, hashing or applying a candidate diff during planning; the backend performs those steps only after approval."
+            if purpose == "change" else ""
+        )
         return (
             "You are a retrieval planner for a local software-engineering project. Do not answer the user's technical question. "
             "You have standing READ-ONLY permission across the Project Assistant repo and all registered source repos/folders. "
@@ -275,6 +305,7 @@ class RetrievalAgent:
             "grep_project uses query as a case-insensitive literal and optional target directory. git_status/git_diff require only repo. "
             "git_log uses optional target path. git_show uses query as ref (usually HEAD) and target as relative file path. "
             "Prefer live read_file/read_file_range when an indexed snippet is incomplete or could be stale."
+            + change_rules
         )
 
     @staticmethod

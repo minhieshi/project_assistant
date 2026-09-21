@@ -422,7 +422,7 @@ class WebFoundationTests(unittest.TestCase):
     def test_api_app_imports_without_initialising_rag(self):
         from project_assistant.api.app import app
 
-        self.assertEqual(app.version, "0.7.7")
+        self.assertEqual(app.version, "0.7.8")
 
     def test_portkey_url_is_explicit_and_does_not_default_public(self):
         from project_assistant.config import PortkeySettings
@@ -1043,6 +1043,35 @@ class MultiRoundRetrievalTests(unittest.TestCase):
         self.assertEqual([action.round_no for action in result.actions], [1, 2])
         self.assertTrue(getattr(model, "assert_source_visible", False))
         self.assertEqual(len(result.hits), 2)
+
+
+    def test_change_mode_planner_gets_all_live_repository_state_independent_of_index_hits(self):
+        from project_assistant.retrieval_agent import RetrievalAgent
+
+        class FakeModel:
+            def __init__(self):
+                self.user = ""
+                self.system = ""
+            def complete(self, system, user):
+                self.system = system
+                self.user = user
+                return json.dumps({"sufficient": True, "actions": []})
+
+        class FakeToolkit:
+            def source_names(self):
+                return ("project", "repo-a", "repo-b")
+            def live_repository_state_text(self):
+                return "- repo-a: branch=main; HEAD=abc123; working_tree=clean\n- repo-b: Git not applicable (non-Git registered source)."
+            def execute(self, action, limit=12):
+                return []
+
+        model = FakeModel()
+        agent = RetrievalAgent(model, FakeToolkit())  # type: ignore[arg-type]
+        agent.plan_and_retrieve("change the handler", "", [], [], purpose="change")
+        self.assertIn("AUTHORITATIVE LIVE REPOSITORY STATE", model.user)
+        self.assertIn("HEAD=abc123", model.user)
+        self.assertIn("Git not applicable", model.user)
+        self.assertIn("not responsible for staging, hashing or applying", model.system)
 
 class GitStateRefreshTests(unittest.TestCase):
     def test_manifest_git_metadata_refreshes_after_plain_folder_becomes_repo(self):

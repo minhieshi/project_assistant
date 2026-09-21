@@ -1,7 +1,12 @@
-# Local Project Assistant — v0.7.7
+# Local Project Assistant — v0.7.8
+
+## v0.7.8 authoritative change context
+
+Change proposals no longer depend on RAG surfacing the correct repository before Git verification is available. Project Assistant injects current branch/HEAD/working-tree state for every registered source root before change planning. The change-mode retrieval agent is also instructed to read likely target files from the live filesystem and compare Git-backed targets with `git_show(HEAD, path)` where needed. Staging, hashing and base-HEAD binding remain backend operations after plan approval.
 
 
-## v0.7.7 Git-state refresh
+
+## v0.7.8 Git-state refresh
 
 If a registered source folder was indexed before it became a Git repository, run **Reindex changed files** once after upgrading. Project Assistant now refreshes branch/HEAD metadata for unchanged files without re-embedding them. Change proposals also verify live branch, HEAD and working-tree state for repos implicated by retrieval immediately before GPT prepares the proposal. Plain non-Git source folders are reported as **Git not applicable**, not as an unresolved verification error.
 

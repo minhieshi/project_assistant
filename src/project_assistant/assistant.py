@@ -22,7 +22,7 @@ CHANGE CONTROL — NON-NEGOTIABLE
 - If the user's request would change code/configuration, explain the intended change first: goal, files likely affected, implementation steps, validation, and material risks/trade-offs.
 - Do not claim a code change has been made when it has not.
 - Do not output a patch or full replacement source file during the proposal stage unless the user explicitly asks to inspect a draft; even then it remains unapplied.
-- Plan approval permits preparation of a candidate diff only.
+- Plan approval permits preparation of a candidate diff only. The backend, not the planning model, is responsible for staging/hash/base-HEAD binding.
 - Source mutation may happen only after the exact staged diff has its own explicit DIFF APPROVED state.
 - The applied diff must match the stored SHA-256, registered repo and Git HEAD recorded when it was staged.
 """.strip()
@@ -59,14 +59,14 @@ class ProjectAssistant:
             graph,
             max_tokens=int(os.getenv("CONTEXT_MAX_TOKENS", "48000")),
         )
-        allowed_roots = [Path(s.path) for s in config.resolved_sources(project_dir)] or [project_dir]
+        allowed_roots = [project_dir, *[Path(s.path) for s in config.resolved_sources(project_dir)]]
         gate = ChangeGate(project_dir, conversations, allowed_repo_roots=allowed_roots)
         chat_model = model or PortkeyChatModel(settings)
         toolkit = RetrievalToolkit(project_dir, config, indexer, graph)
         retrieval_agent = RetrievalAgent(chat_model, toolkit)
         return cls(project_dir, config, conversations, indexer, compiler, gate, chat_model, retrieval_agent)
 
-    def compile_context(self, query: str, conversation_id: str | None = None, *, agentic: bool = True):
+    def compile_context(self, query: str, conversation_id: str | None = None, *, agentic: bool = True, purpose: str = "answer"):
         seed = self.compiler.initial_retrieval(query, conversation_id)
         extra_hits = []
         actions: tuple[str, ...] = ()
@@ -82,6 +82,7 @@ class ProjectAssistant:
                     routed_repos=[route.name for route in seed.routes],
                     max_actions=int(os.getenv("RETRIEVAL_AGENT_MAX_ACTIONS", "6")),
                     max_rounds=int(os.getenv("RETRIEVAL_AGENT_MAX_ROUNDS", "3")),
+                    purpose=purpose,
                 )
                 extra_hits = list(result.hits)
                 actions = tuple(action.label() for action in result.actions)
@@ -151,16 +152,17 @@ class ProjectAssistant:
 
     def propose_change(self, conversation_id: str, request: str) -> ChangeProposal:
         self.conversations.append(conversation_id, "user", request)
-        context = self.compile_context(request, conversation_id, agentic=True)
+        context = self.compile_context(request, conversation_id, agentic=True, purpose="change")
         self.compiler.write_debug_snapshot(context)
-        git_state = self._live_git_state_for_context(context)
+        git_state = self._live_git_state_all_sources()
         system = self._system_prompt() + "\n\n" + CHANGE_CONTROL + "\n\nReturn a concise implementation proposal only."
         user = (
             f"{context.text}\n\n## LIVE REPOSITORY STATE\n\n{git_state}\n\n"
             f"## CHANGE REQUEST\n\n{request}\n\n"
             "Produce: goal; files/components likely affected; implementation steps; validation; risks/trade-offs. "
-            "Use LIVE REPOSITORY STATE as authoritative for Git branch/HEAD/working-tree status; indexed Git metadata may be historical. "
+            "Use LIVE REPOSITORY STATE as authoritative for Git branch/HEAD/working-tree status; it covers all registered source roots and is independent of RAG. "
             "For non-Git sources, treat Git verification as not applicable rather than unresolved. "
+            "Do not refuse the proposal because a candidate diff has not yet been staged or hashed: proposal generation is only for identifying and verifying the intended change. The backend stages/hashes an exact diff only after plan approval. "
             "Do not generate or apply a patch."
         )
         plan = self.model.complete(system, user)
@@ -169,28 +171,17 @@ class ProjectAssistant:
         return proposal
 
 
-    def _live_git_state_for_context(self, context) -> str:
-        """Verify live repository state for sources implicated by retrieval.
+    def _live_git_state_all_sources(self) -> str:
+        """Return authoritative live state for every registered source root.
 
-        Proposal generation must not rely on Git metadata captured when chunks were
-        embedded. Determine the relevant source roots from retrieved evidence/routes
-        and inspect their current state immediately before the proposal model call.
+        This deliberately does not depend on RAG/retrieval hits. A change proposal
+        must always know current branch/HEAD/working-tree state for all Git-backed
+        registered roots, even when retrieval initially matched the wrong repo.
         """
-        repos: list[str] = []
-        for hit in getattr(context, "retrieved_hits", ()):
-            repo = str(hit.metadata.get("repo", "")).strip()
-            if repo and repo not in repos:
-                repos.append(repo)
-        for repo in getattr(context, "routed_repos", ()):
-            if repo and repo not in repos:
-                repos.append(repo)
-        if not repos:
-            repos = [source.name for source in self.config.resolved_sources(self.project_dir)]
-
         access = RegisteredSourceAccess(self.project_dir, self.config)
-        states = access.repository_states(repos)
+        states = access.repository_states()
         if not states:
-            return "No registered source repositories were implicated by retrieval."
+            return "No registered source roots."
 
         lines: list[str] = []
         for state in states:
@@ -203,6 +194,11 @@ class ProjectAssistant:
             working_tree = state.get("working_tree") or "unknown"
             lines.append(f"- {repo}: branch={branch}; HEAD={head}; working_tree={working_tree}")
         return "\n".join(lines)
+
+    # Backwards-compatible alias for tests/callers from v0.7.7. Context is ignored
+    # intentionally because live Git verification must not depend on retrieval.
+    def _live_git_state_for_context(self, context=None) -> str:
+        return self._live_git_state_all_sources()
 
     def approve(self, proposal_id: str):
         proposal = self.gate.approve(proposal_id)

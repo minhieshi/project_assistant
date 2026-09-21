@@ -123,3 +123,8 @@ Composer isolation, memoised Markdown messages, buffered streaming, lightweight 
 ## v0.7.7 — Live Git state verification
 
 Git metadata is refreshed independently of source content fingerprints. Change proposals receive an authoritative live branch/HEAD/working-tree snapshot for implicated registered sources; non-Git folders are explicitly marked not applicable.
+
+
+## v0.7.8 — Authoritative change context
+
+Change planning now receives live Git state for all registered roots independent of RAG. Likely target files must be read live, and Git-backed targets may be compared with `HEAD` through the controlled Git reader before a proposal is considered sufficiently grounded. Diff staging/hash/base-HEAD binding remains a backend approval-stage responsibility.
