@@ -1,3 +1,3 @@
 """Local-first project assistant."""
 
-__version__ = "0.6.7.4"
+__version__ = "0.7.0"

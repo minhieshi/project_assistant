@@ -1,3 +1,0 @@
-[console_scripts]
-project-assistant = project_assistant.cli:main
-project-assistant-api = project_assistant.api_server:main

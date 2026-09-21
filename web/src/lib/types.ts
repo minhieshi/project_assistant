@@ -59,6 +59,8 @@ export type ContextSummary = {
   routed_repos: string[];
   rag_sources: string[];
   graph_sources: string[];
+  retrieval_queries: string[];
+  retrieval_actions: string[];
   text?: string;
   debug_path?: string;
 };
@@ -72,6 +74,14 @@ export type AppStatus = {
     api_key_configured: boolean;
     chat_model: string;
     embedding_model_configured: boolean;
+  };
+  dictation: {
+    configured: boolean;
+    backend: string;
+    binary?: string | null;
+    model?: string | null;
+    language: string;
+    detail?: string | null;
   };
 };
 

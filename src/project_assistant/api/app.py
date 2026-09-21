@@ -14,6 +14,7 @@ from ..config import ProjectConfig, SourceRoot
 from ..conversations import ConversationStore
 from ..knowledge_graph import KnowledgeGraph
 from ..index_status import IndexStatusStore
+from ..dictation import dictation_status, transcribe_wav
 from ..security import load_or_create_api_token, tokens_equal, validate_source_root
 from .dependencies import assistant_for, invalidate, project_path, registry
 from .schemas import (
@@ -32,7 +33,7 @@ from .schemas import (
 
 
 API_TOKEN = load_or_create_api_token()
-app = FastAPI(title="Local Project Assistant", version="0.6.7")
+app = FastAPI(title="Local Project Assistant", version="0.7.0")
 app.add_middleware(TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost", "testserver"])
 
 
@@ -92,7 +93,7 @@ def _sse(event: str, payload: dict | str) -> str:
 
 @app.get("/health")
 def health() -> dict:
-    return {"status": "ok", "version": "0.6.7"}
+    return {"status": "ok", "version": "0.7.0"}
 
 
 @app.get("/api/status")
@@ -102,7 +103,7 @@ def status() -> dict:
 
     settings = PortkeySettings.from_env()
     return {
-        "version": "0.6.7",
+        "version": "0.7.0",
         "projects_root": str(registry.projects_root),
         "portkey": {
             "base_url": settings.base_url,
@@ -113,7 +114,21 @@ def status() -> dict:
             "reasoning_effort": settings.reasoning_effort,
             "embedding_model_configured": bool(settings.embedding_model),
         },
+        "dictation": dictation_status().to_dict(),
     }
+
+
+@app.post("/api/dictate")
+async def dictate(request: Request) -> dict:
+    try:
+        content_type = (request.headers.get("content-type") or "").split(";", 1)[0].strip().lower()
+        if content_type not in {"audio/wav", "audio/x-wav", "application/octet-stream"}:
+            raise ValueError("Dictation expects Content-Type: audio/wav")
+        audio = await request.body()
+        text = await asyncio.to_thread(transcribe_wav, audio)
+        return {"text": text}
+    except Exception as exc:
+        raise _error(exc)
 
 
 @app.get("/api/projects")
@@ -302,6 +317,8 @@ def stream_chat(project_id: str, conversation_id: str, body: ChatRequest):
                             "routed_repos": list(compiled.routed_repos),
                             "rag_sources": list(compiled.rag_sources),
                             "graph_sources": list(compiled.graph_sources),
+                            "retrieval_queries": list(compiled.retrieval_queries),
+                            "retrieval_actions": list(compiled.retrieval_actions),
                         },
                     )
                 elif event[0] == "delta":
@@ -390,13 +407,15 @@ def apply_patch(project_id: str, proposal_id: str) -> dict:
 async def inspect_context(project_id: str, body: QueryRequest) -> dict:
     try:
         assistant = assistant_for(project_id)
-        compiled = await asyncio.to_thread(assistant.compiler.compile, body.query, body.conversation_id)
+        compiled = await asyncio.to_thread(assistant.compile_context, body.query, body.conversation_id, agentic=True)
         path = assistant.compiler.write_debug_snapshot(compiled)
         return {
             "estimated_tokens": compiled.estimated_tokens,
             "routed_repos": list(compiled.routed_repos),
             "rag_sources": list(compiled.rag_sources),
             "graph_sources": list(compiled.graph_sources),
+            "retrieval_queries": list(compiled.retrieval_queries),
+            "retrieval_actions": list(compiled.retrieval_actions),
             "text": compiled.text,
             "debug_path": str(path),
         }

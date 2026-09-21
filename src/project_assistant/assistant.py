@@ -11,6 +11,7 @@ from .conversations import ConversationStore
 from .indexing import IncrementalIndexer
 from .knowledge_graph import KnowledgeGraph
 from .portkey import ChatModel, PortkeyChatModel, get_embedding_function
+from .retrieval_agent import RetrievalAgent, RetrievalToolkit
 from .security import private_file
 
 
@@ -35,6 +36,7 @@ class ProjectAssistant:
     compiler: ContextCompiler
     gate: ChangeGate
     model: ChatModel
+    retrieval_agent: RetrievalAgent
 
     @classmethod
     def build(cls, project_dir: Path, model: ChatModel | None = None, embedding_function=None) -> "ProjectAssistant":
@@ -54,17 +56,51 @@ class ProjectAssistant:
             indexer,
             conversations,
             graph,
-            max_tokens=int(os.getenv("CONTEXT_MAX_TOKENS", "32000")),
+            max_tokens=int(os.getenv("CONTEXT_MAX_TOKENS", "48000")),
         )
         allowed_roots = [Path(s.path) for s in config.resolved_sources(project_dir)] or [project_dir]
         gate = ChangeGate(project_dir, conversations, allowed_repo_roots=allowed_roots)
-        return cls(project_dir, config, conversations, indexer, compiler, gate, model or PortkeyChatModel(settings))
+        chat_model = model or PortkeyChatModel(settings)
+        toolkit = RetrievalToolkit(project_dir, config, indexer, graph)
+        retrieval_agent = RetrievalAgent(chat_model, toolkit)
+        return cls(project_dir, config, conversations, indexer, compiler, gate, chat_model, retrieval_agent)
+
+    def compile_context(self, query: str, conversation_id: str | None = None, *, agentic: bool = True):
+        seed = self.compiler.initial_retrieval(query, conversation_id)
+        extra_hits = []
+        actions: tuple[str, ...] = ()
+        enabled = os.getenv("RETRIEVAL_AGENT_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
+        if agentic and enabled:
+            recent = self.conversations.recent_text(conversation_id, max_chars=18000) if conversation_id else ""
+            result = self.retrieval_agent.plan_and_retrieve(
+                query,
+                recent,
+                list(seed.initial_hits),
+                routed_repos=[route.name for route in seed.routes],
+            )
+            extra_hits = list(result.hits)
+            actions = tuple(action.label() for action in result.actions)
+        return self.compiler.compile(
+            query,
+            conversation_id,
+            seed=seed,
+            supplemental_hits=extra_hits,
+            retrieval_actions=actions,
+        )
 
     def _prepare_answer(self, conversation_id: str, user_text: str):
         self.conversations.append(conversation_id, "user", user_text)
-        context = self.compiler.compile(user_text, conversation_id)
+        context = self.compile_context(user_text, conversation_id, agentic=True)
         self.compiler.write_debug_snapshot(context)
-        system = self._system_prompt() + "\n\n" + CHANGE_CONTROL
+        retrieval_rules = (
+            "PROJECT RETRIEVAL — IMPORTANT\n"
+            "- Project Assistant has already performed conversation-aware RAG and an additional read-only retrieval-planning pass.\n"
+            "- Treat retrieved source as the primary project evidence.\n"
+            "- Do not ask the user to paste an indexed file/playbook merely because it was not in the first few snippets.\n"
+            "- If a required artefact still was not surfaced after retrieval, say which artefact/search is missing rather than pretending it is unavailable to the project.\n"
+            "- Never claim you read a file unless it appears in retrieved context."
+        )
+        system = self._system_prompt() + "\n\n" + CHANGE_CONTROL + "\n\n" + retrieval_rules
         user = f"{context.text}\n\n## CURRENT USER REQUEST\n\n{user_text}"
         return context, system, user
 
@@ -100,7 +136,7 @@ class ProjectAssistant:
 
     def propose_change(self, conversation_id: str, request: str) -> ChangeProposal:
         self.conversations.append(conversation_id, "user", request)
-        context = self.compiler.compile(request, conversation_id)
+        context = self.compile_context(request, conversation_id, agentic=True)
         self.compiler.write_debug_snapshot(context)
         system = self._system_prompt() + "\n\n" + CHANGE_CONTROL + "\n\nReturn a concise implementation proposal only."
         user = (

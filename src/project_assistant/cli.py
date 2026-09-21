@@ -222,7 +222,7 @@ def main() -> None:
         for route in assistant.indexer.catalog.route(args.query, lexical_hits, vector_hits, graph_hits, assistant.config.repo_route_top_n):
             print(f"{route.name}: {route.score:.3f} ({', '.join(route.reasons) or 'fallback'})")
     elif args.command == "context":
-        compiled = assistant.compiler.compile(args.query, args.conversation)
+        compiled = assistant.compile_context(args.query, args.conversation, agentic=True)
         path = assistant.compiler.write_debug_snapshot(compiled)
         print(f"Estimated tokens: {compiled.estimated_tokens}")
         print(f"Snapshot: {path}")

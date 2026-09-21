@@ -17,7 +17,7 @@ MAX_TEXT_FILE_BYTES = 2 * 1024 * 1024
 MAX_PDF_FILE_BYTES = 50 * 1024 * 1024
 GENERATED_LARGE_BYTES = 200 * 1024
 MINIFIED_LINE_CHARS = 20_000
-INDEX_POLICY_VERSION = 2  # v0.6.7.4 balanced credential handling
+INDEX_POLICY_VERSION = 2  # v0.6.7.5 balanced credential handling
 
 # Directories that are never useful as project knowledge when walking a
 # non-Git source. Git-backed sources use ``git ls-files`` instead.

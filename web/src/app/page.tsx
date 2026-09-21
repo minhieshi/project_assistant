@@ -1,7 +1,10 @@
 "use client";
 
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { api, streamChat } from "@/lib/api";
+import { api, streamChat, transcribeLocalWav } from "@/lib/api";
+import { startLocalWavRecording, type LocalWavRecorder } from "@/lib/dictation";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import type {
   ContextSummary,
   ConversationDetail,
@@ -33,6 +36,8 @@ export default function Home() {
   const [message, setMessage] = useState("");
   const [mode, setMode] = useState<"chat" | "propose">("chat");
   const [streamingText, setStreamingText] = useState("");
+  const [recording, setRecording] = useState(false);
+  const [transcribing, setTranscribing] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [importPath, setImportPath] = useState("");
@@ -46,6 +51,7 @@ export default function Home() {
   const [convertSourceName, setConvertSourceName] = useState("");
   const [contextQuery, setContextQuery] = useState("");
   const bottomRef = useRef<HTMLDivElement>(null);
+  const recorderRef = useRef<LocalWavRecorder | null>(null);
 
   const currentProject = useMemo(() => projects.find((project) => project.id === projectId) ?? null, [projects, projectId]);
 
@@ -104,6 +110,17 @@ export default function Home() {
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [conversation?.entries.length, streamingText]);
+
+  useEffect(() => () => {
+    if (recorderRef.current) void recorderRef.current.cancel();
+  }, []);
+
+  useEffect(() => {
+    if (!recorderRef.current) return;
+    void recorderRef.current.cancel();
+    recorderRef.current = null;
+    setRecording(false);
+  }, [projectId, conversationId]);
 
   async function createProject(event: FormEvent) {
     event.preventDefault();
@@ -166,6 +183,35 @@ export default function Home() {
       setError(String(e));
       await loadConversation(projectId, conversationId).catch(() => undefined);
     } finally { setBusy(false); }
+  }
+
+  async function toggleDictation() {
+    if (transcribing || busy) return;
+    setError("");
+    try {
+      if (recording && recorderRef.current) {
+        setRecording(false);
+        setTranscribing(true);
+        const recorder = recorderRef.current;
+        recorderRef.current = null;
+        const wav = await recorder.stop();
+        const transcript = await transcribeLocalWav(wav);
+        setMessage((current) => current.trim() ? `${current.trim()} ${transcript}` : transcript);
+        return;
+      }
+
+      if (!appStatus?.dictation.configured) {
+        throw new Error(appStatus?.dictation.detail || "Local dictation is not configured");
+      }
+      recorderRef.current = await startLocalWavRecording();
+      setRecording(true);
+    } catch (e) {
+      recorderRef.current = null;
+      setRecording(false);
+      setError(String(e));
+    } finally {
+      setTranscribing(false);
+    }
   }
 
   async function addSource(event: FormEvent) {
@@ -267,8 +313,8 @@ export default function Home() {
   return (
     <div className="app-shell">
       <aside className="sidebar">
-        <div className="brand">Project Assistant <span className="small">v0.6.7.4</span></div>
-        {appStatus && <div className="notice" style={{ marginBottom: 12 }}>Projects: {appStatus.projects_root}<br />Portkey: {appStatus.portkey.base_url_configured ? "URL configured" : "URL missing"}</div>}
+        <div className="brand">Project Assistant <span className="small">v0.7.0</span></div>
+        {appStatus && <div className="notice" style={{ marginBottom: 12 }}>Projects: {appStatus.projects_root}<br />Portkey: {appStatus.portkey.base_url_configured ? "URL configured" : "URL missing"}<br />Dictation: {appStatus.dictation.configured ? "local Whisper ready" : "not configured"}</div>}
 
         <div className="section-title">Projects</div>
         {projects.map((project) => (
@@ -330,11 +376,22 @@ export default function Home() {
                   if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void send(); }
                 }} placeholder={mode === "propose" ? "Describe the code/configuration change. It will be written as a proposal only." : "Ask about this project..."} />
                 <div className="composer-actions">
-                  <div className="mode">
-                    <button className={mode === "chat" ? "active" : ""} onClick={() => setMode("chat")}>Chat</button>
-                    <button className={mode === "propose" ? "active" : ""} onClick={() => setMode("propose")}>Propose change</button>
+                  <div className="row wrap">
+                    <div className="mode">
+                      <button className={mode === "chat" ? "active" : ""} onClick={() => setMode("chat")}>Chat</button>
+                      <button className={mode === "propose" ? "active" : ""} onClick={() => setMode("propose")}>Propose change</button>
+                    </div>
+                    <button
+                      className={`btn dictate ${recording ? "recording" : ""}`}
+                      type="button"
+                      onClick={() => void toggleDictation()}
+                      disabled={busy || transcribing}
+                      title={appStatus?.dictation.configured ? "Local-only dictation via whisper.cpp" : appStatus?.dictation.detail || "Local dictation is not configured"}
+                    >
+                      {transcribing ? "Transcribing…" : recording ? "Stop dictation" : "Dictate"}
+                    </button>
                   </div>
-                  <button className="btn primary" onClick={() => void send()} disabled={busy || !message.trim()}>{busy ? "Working…" : mode === "propose" ? "Write proposal" : "Send"}</button>
+                  <button className="btn primary" onClick={() => void send()} disabled={busy || recording || transcribing || !message.trim()}>{busy ? "Working…" : mode === "propose" ? "Write proposal" : "Send"}</button>
                 </div>
               </div>
             </div>}
@@ -384,9 +441,19 @@ export default function Home() {
 
 function Message({ entry }: { entry: ConversationEntry }) {
   const role = entry.role === "event" ? "event" : entry.role;
+  const markdown = entry.role !== "user";
   return <div className={`message ${role}`}>
     <div className="message-label">{entry.title}{entry.timestamp ? ` · ${timeLabel(entry.timestamp)}` : ""}</div>
-    <div className="message-body">{entry.body}</div>
+    {markdown ? (
+      <div className="message-body markdown">
+        <ReactMarkdown
+          remarkPlugins={[remarkGfm]}
+          components={{
+            a: ({ href, children }) => <a href={href} target="_blank" rel="noreferrer">{children}</a>,
+          }}
+        >{entry.body}</ReactMarkdown>
+      </div>
+    ) : <div className="message-body">{entry.body}</div>}
   </div>;
 }
 
@@ -516,8 +583,10 @@ function ContextPanel({ context }: { context: ContextSummary | null }) {
       <div className="small">Routed repositories</div>
       <div className="row wrap" style={{ marginTop: 7 }}>{context.routed_repos.map((repo) => <span className="badge" key={repo}>{repo}</span>)}</div>
     </div>
-    <div className="card"><h3>Retrieved source</h3><ul className="context-list">{context.rag_sources.slice(0, 12).map((source) => <li key={source}>{source}</li>)}</ul></div>
-    {context.graph_sources.length > 0 && <div className="card"><h3>Graph sources</h3><ul className="context-list">{context.graph_sources.slice(0, 10).map((source) => <li key={source}>{source}</li>)}</ul></div>}
+    {context.retrieval_queries?.length > 0 && <div className="card"><h3>Retrieval queries</h3><ul className="context-list">{context.retrieval_queries.slice(0, 10).map((query, idx) => <li key={`${idx}-${query}`}>{query}</li>)}</ul></div>}
+    {context.retrieval_actions?.length > 0 && <div className="card"><h3>Agent retrieval</h3><ul className="context-list">{context.retrieval_actions.map((action, idx) => <li key={`${idx}-${action}`}>{action}</li>)}</ul></div>}
+    <div className="card"><h3>Retrieved source</h3><ul className="context-list">{context.rag_sources.slice(0, 30).map((source) => <li key={source}>{source}</li>)}</ul></div>
+    {context.graph_sources.length > 0 && <div className="card"><h3>Graph sources</h3><ul className="context-list">{context.graph_sources.slice(0, 20).map((source) => <li key={source}>{source}</li>)}</ul></div>}
     {context.text && <div className="card"><h3>Compiled context</h3><div className="context-text">{context.text}</div>{context.debug_path && <div className="path" style={{ marginTop: 8 }}>{context.debug_path}</div>}</div>}
   </>;
 }

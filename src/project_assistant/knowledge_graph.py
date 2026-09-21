@@ -10,6 +10,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 
+GRAPH_INDEX_VERSION = 2  # v0.7 adds Java structural graph extraction
+
+
 @dataclass(frozen=True)
 class GraphHit:
     node_id: str
@@ -109,6 +112,8 @@ class KnowledgeGraph:
                 self._index_cobol(conn, file_id, source_path, text)
             elif suffix in {".rexx", ".rex"}:
                 self._index_rexx(conn, file_id, source_path, text)
+            elif suffix == ".java":
+                self._index_java(conn, file_id, source_path, text)
 
     def search(self, query: str, limit: int = 10) -> list[GraphHit]:
         raw_terms = re.findall(r"`([^`]+)`|\b([A-Za-z_$#@][A-Za-z0-9_.$#@-]{1,})\b", query)
@@ -341,6 +346,70 @@ class KnowledgeGraph:
             if perform:
                 target = self._global_name(conn, perform.group(1))
                 self._edge(conn, current_owner, target, "PERFORMS", source_path)
+
+
+    def _index_java(self, conn, file_id: str, source_path: str, text: str) -> None:
+        """Lightweight Java graph extraction without adding a parser dependency."""
+        current_class_id: str | None = None
+        current_class_name: str | None = None
+        class_depth: int | None = None
+        current_method_id: str | None = None
+        method_depth: int | None = None
+        brace_depth = 0
+        control_words = {
+            "if", "for", "while", "switch", "catch", "return", "throw", "new",
+            "synchronized", "super", "this", "assert", "try", "do",
+        }
+        method_rx = re.compile(
+            r"^\s*(?:(?:public|private|protected|static|final|abstract|synchronized|native|strictfp|default)\s+)*"
+            r"(?:<[^{;>]+>\s+)?(?:[A-Za-z_$][\w$<>,.?\[\]]*\s+)+([A-Za-z_$][\w$]*)\s*\([^;{}]*\)"
+            r"(?:\s+throws\s+[^{}]+)?\s*\{?"
+        )
+        class_rx = re.compile(r"^\s*(?:(?:public|private|protected|static|final|abstract|sealed|non-sealed)\s+)*(?:class|interface|enum|record)\s+([A-Za-z_$][\w$]*)")
+        import_rx = re.compile(r"^\s*import\s+(?:static\s+)?([A-Za-z_$][\w$]*(?:\.[A-Za-z_$*][\w$*]*)+)\s*;")
+        package_rx = re.compile(r"^\s*package\s+([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)\s*;")
+
+        for line_no, line in enumerate(text.splitlines(), start=1):
+            package = package_rx.match(line)
+            if package:
+                target = self._global_name(conn, package.group(1), "java_package")
+                self._edge(conn, file_id, target, "IN_PACKAGE", source_path)
+            imported = import_rx.match(line)
+            if imported:
+                target = self._global_name(conn, imported.group(1), "java_import")
+                self._edge(conn, file_id, target, "IMPORTS", source_path)
+
+            class_match = class_rx.match(line)
+            if class_match:
+                current_class_name = class_match.group(1)
+                current_class_id = self._symbol(conn, file_id, source_path, "java_class", current_class_name, line_no)
+                class_depth = brace_depth + max(1, line.count("{") - line.count("}"))
+                current_method_id = None
+                method_depth = None
+            else:
+                method = method_rx.match(line)
+                if method and method.group(1) not in control_words:
+                    method_name = method.group(1)
+                    current_method_id = self._symbol(conn, file_id, source_path, "java_method", method_name, line_no)
+                    if current_class_id:
+                        self._edge(conn, current_class_id, current_method_id, "DECLARES_METHOD", source_path)
+                    method_depth = brace_depth + max(1, line.count("{") - line.count("}"))
+
+            owner = current_method_id or current_class_id or file_id
+            for called in re.findall(r"\b([A-Za-z_$][\w$]*)\s*\(", line):
+                if called in control_words:
+                    continue
+                target = self._global_name(conn, called)
+                self._edge(conn, owner, target, "CALLS", source_path)
+
+            brace_depth += line.count("{") - line.count("}")
+            if current_method_id is not None and method_depth is not None and brace_depth < method_depth:
+                current_method_id = None
+                method_depth = None
+            if current_class_id is not None and class_depth is not None and brace_depth < class_depth:
+                current_class_id = None
+                current_class_name = None
+                class_depth = None
 
     def _index_rexx(self, conn, file_id: str, source_path: str, text: str) -> None:
         current_owner = file_id

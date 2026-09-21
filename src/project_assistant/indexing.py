@@ -5,7 +5,6 @@ import json
 import os
 import re
 import subprocess
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
@@ -15,21 +14,13 @@ from langchain_core.documents import Document
 
 from .code_chunking import CodeChunker
 from .config import ProjectConfig, SourceRoot
-from .knowledge_graph import KnowledgeGraph
+from .knowledge_graph import GRAPH_INDEX_VERSION, KnowledgeGraph
 from .index_status import IndexStatusStore
 from .index_policy import INDEX_POLICY_VERSION, FileEligibilityPolicy, should_skip_dir
 from .lexical_index import LexicalHit, LexicalIndex
 from .repo_catalog import RepositoryCatalog
+from .retrieval_types import SearchHit
 from .security import EgressPolicy, private_file, path_is_within
-
-
-@dataclass(frozen=True)
-class SearchHit:
-    text: str
-    metadata: dict
-    score: float | None
-    channels: tuple[str, ...] = ()
-
 
 class IncrementalIndexer:
     def __init__(self, project_dir: Path, config: ProjectConfig, embedding_function):
@@ -93,6 +84,13 @@ class IncrementalIndexer:
                     and record.get("fingerprint") == fingerprint
                     and record.get("index_policy_version") == INDEX_POLICY_VERSION
                 ):
+                    # Graph parser upgrades are local-only. Refresh structural
+                    # relationships without re-embedding unchanged source files.
+                    if record.get("graph_index_version") != GRAPH_INDEX_VERSION:
+                        self._refresh_graph(source, path)
+                        record["graph_index_version"] = GRAPH_INDEX_VERSION
+                        manifest[source_path] = record
+                        self._save_manifest(manifest)
                     unchanged += 1
                     self.status_store.status.unchanged += 1
                     self.status_store.repo(source.name).unchanged += 1
@@ -148,7 +146,13 @@ class IncrementalIndexer:
             self._save_manifest(manifest)
             return
         fingerprint = self._fingerprint(path)
-        if manifest.get(key, {}).get("fingerprint") == fingerprint:
+        existing = manifest.get(key, {})
+        if existing.get("fingerprint") == fingerprint and existing.get("index_policy_version") == INDEX_POLICY_VERSION:
+            if existing.get("graph_index_version") != GRAPH_INDEX_VERSION:
+                self._refresh_graph(source, path)
+                existing["graph_index_version"] = GRAPH_INDEX_VERSION
+                manifest[key] = existing
+                self._save_manifest(manifest)
             return
         if key in manifest:
             self._delete_manifest_entry(manifest, key)
@@ -309,14 +313,13 @@ class IncrementalIndexer:
         elif findings:
             self._security_event(path, "embedding blocked: " + ", ".join(findings))
 
-        if path.suffix.lower() != ".pdf":
-            text = path.read_text(encoding="utf-8", errors="replace")
-            self.graph.index_file(source.name, Path(source.path), path, text)
+        self._refresh_graph(source, path)
 
         git = self._git_metadata(Path(source.path)) if source.name != "project" else {"branch": None, "commit": None}
         return {
             "fingerprint": fingerprint,
             "index_policy_version": INDEX_POLICY_VERSION,
+            "graph_index_version": GRAPH_INDEX_VERSION,
             "chunk_ids": chunk_ids,
             "source": source.name,
             "relative_path": self._relative(path, Path(source.path)),
@@ -327,6 +330,12 @@ class IncrementalIndexer:
             "egress_advisory": advisory_findings,
             "embedding_error": embedding_error,
         }
+
+    def _refresh_graph(self, source: SourceRoot, path: Path) -> None:
+        if path.suffix.lower() == ".pdf":
+            return
+        text = path.read_text(encoding="utf-8", errors="replace")
+        self.graph.index_file(source.name, Path(source.path), path, text)
 
     def _load_documents(self, source: SourceRoot, path: Path) -> list[Document]:
         git = self._git_metadata(Path(source.path)) if source.name != "project" else {"branch": None, "commit": None}
