@@ -10,6 +10,7 @@ import type {
   Project,
   Proposal,
   AppStatus,
+  IndexStatus,
 } from "@/lib/types";
 
 function timeLabel(value?: string | null) {
@@ -21,6 +22,7 @@ function timeLabel(value?: string | null) {
 export default function Home() {
   const [projects, setProjects] = useState<Project[]>([]);
   const [appStatus, setAppStatus] = useState<AppStatus | null>(null);
+  const [indexStatus, setIndexStatus] = useState<IndexStatus | null>(null);
   const [projectId, setProjectId] = useState<string>("");
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
   const [conversationId, setConversationId] = useState<string>("");
@@ -65,6 +67,10 @@ export default function Home() {
     setProposals(proposalList);
   }, []);
 
+  const loadIndexStatus = useCallback(async (pid: string) => {
+    setIndexStatus(await api.indexStatus(pid));
+  }, []);
+
   useEffect(() => {
     Promise.all([loadProjects(), api.status().then(setAppStatus)]).catch((e) => setError(String(e)));
   }, [loadProjects]);
@@ -82,7 +88,8 @@ export default function Home() {
       return;
     }
     loadConversations(projectId).catch((e) => setError(String(e)));
-  }, [projectId, loadConversations, projects]);
+    loadIndexStatus(projectId).catch(() => setIndexStatus(null));
+  }, [projectId, loadConversations, loadIndexStatus, projects]);
 
   useEffect(() => {
     setStreamingText("");
@@ -225,10 +232,18 @@ export default function Home() {
   async function indexProject() {
     if (!projectId) return;
     setBusy(true); setError("");
+    const pid = projectId;
+    const poll = window.setInterval(() => { void loadIndexStatus(pid).catch(() => undefined); }, 700);
     try {
-      const result = await api.indexProject(projectId);
-      alert(`Index complete\nAdded: ${result.added ?? 0}\nChanged: ${result.changed ?? 0}\nDeleted: ${result.deleted ?? 0}\nUnchanged: ${result.unchanged ?? 0}\nLocal-only (egress blocked): ${result.local_only ?? 0}`);
-    } catch (e) { setError(String(e)); } finally { setBusy(false); }
+      await api.indexProject(pid);
+      await loadIndexStatus(pid);
+    } catch (e) {
+      setError(String(e));
+      await loadIndexStatus(pid).catch(() => undefined);
+    } finally {
+      window.clearInterval(poll);
+      setBusy(false);
+    }
   }
 
   async function proposalAction(proposal: Proposal, action: "approve-plan" | "reject") {
@@ -252,7 +267,7 @@ export default function Home() {
   return (
     <div className="app-shell">
       <aside className="sidebar">
-        <div className="brand">Project Assistant <span className="small">v0.6.1</span></div>
+        <div className="brand">Project Assistant <span className="small">v0.6.7</span></div>
         {appStatus && <div className="notice" style={{ marginBottom: 12 }}>Projects: {appStatus.projects_root}<br />Portkey: {appStatus.portkey.base_url_configured ? "URL configured" : "URL missing"}</div>}
 
         <div className="section-title">Projects</div>
@@ -345,6 +360,7 @@ export default function Home() {
             setConvertSourceName={setConvertSourceName}
             convertProjectToSource={convertProjectToSource}
             forgetImportedProject={forgetImportedProject}
+            indexStatus={indexStatus}
           />
         )}
       </main>
@@ -394,6 +410,7 @@ function ProjectPanel(props: {
   setConvertSourceName: (value: string) => void;
   convertProjectToSource: (event: FormEvent) => void;
   forgetImportedProject: () => void;
+  indexStatus: IndexStatus | null;
 }) {
   const { project } = props;
   if (!project) return <div className="empty">Select a project.</div>;
@@ -432,6 +449,7 @@ function ProjectPanel(props: {
     </div>
 
     <div className="row" style={{ justifyContent: "space-between", marginTop: 24 }}><h3>Source repositories</h3><button className="btn" onClick={props.indexProject} disabled={props.busy}>Reindex changed files</button></div>
+    <IndexVisibility status={props.indexStatus} />
     <div className="source-list">
       {project.sources.length === 0 && <div className="notice">No external source repos registered yet.</div>}
       {project.sources.map((source) => <div className="source-row row" style={{ justifyContent: "space-between" }} key={source.name}>
@@ -445,6 +463,48 @@ function ProjectPanel(props: {
       <button className="btn primary" disabled={props.busy || !props.sourcePath.trim()}>Add source repo</button>
     </form>
   </section>;
+}
+
+function IndexVisibility({ status }: { status: IndexStatus | null }) {
+  if (!status) return <div className="notice" style={{ marginBottom: 12 }}>No index run recorded yet.</div>;
+  const repoRows = Object.entries(status.repos);
+  const reasonRows = Object.entries(status.skip_reasons).sort((a, b) => b[1] - a[1]);
+  const localOnlyRows = Object.entries(status.local_only_reasons ?? {}).sort((a, b) => b[1] - a[1]);
+  return <div className="card" style={{ marginBottom: 14 }}>
+    <div className="row wrap" style={{ justifyContent: "space-between" }}>
+      <div>
+        <h3>Index visibility</h3>
+        <div className="small">State: <strong>{status.state}</strong>{status.finished_at ? ` · ${timeLabel(status.finished_at)}` : ""}</div>
+      </div>
+      <div className="row wrap">
+        <span className="badge">{status.scanned} scanned</span>
+        <span className="badge">{status.chunks} chunks</span>
+        <span className="badge">{status.skipped} skipped</span>
+        <span className="badge">{status.local_only} local-only</span>
+      </div>
+    </div>
+    {status.state === "running" && <div className="notice" style={{ marginTop: 10 }}>Indexing {status.current_repo ?? ""}{status.current_file ? ` / ${status.current_file}` : ""}</div>}
+    {status.last_error && <div className="error" style={{ marginTop: 10 }}>{status.last_error}</div>}
+    {repoRows.length > 0 && <div style={{ marginTop: 12 }}>
+      <div className="small" style={{ marginBottom: 6 }}>Per repository</div>
+      {repoRows.map(([name, stats]) => <div className="source-row row wrap" style={{ justifyContent: "space-between" }} key={name}>
+        <strong>{name}</strong>
+        <span className="small">{stats.scanned} scanned · {stats.indexed} indexed · {stats.unchanged} unchanged · {stats.skipped} skipped · {stats.local_only} local-only · {stats.chunks} chunks</span>
+      </div>)}
+    </div>}
+    {reasonRows.length > 0 && <div style={{ marginTop: 12 }}>
+      <div className="small" style={{ marginBottom: 6 }}>Skipped automatically</div>
+      <div className="row wrap">{reasonRows.map(([reason, count]) => <span className="badge" key={reason}>{reason}: {count}</span>)}</div>
+    </div>}
+    {localOnlyRows.length > 0 && <div style={{ marginTop: 12 }}>
+      <div className="small" style={{ marginBottom: 6 }}>Kept local-only</div>
+      <div className="row wrap">{localOnlyRows.map(([reason, count]) => <span className="badge" key={reason}>{reason}: {count}</span>)}</div>
+    </div>}
+    {status.recent_skips.length > 0 && <details style={{ marginTop: 12 }}>
+      <summary className="small">Recent skipped files</summary>
+      <ul className="context-list">{status.recent_skips.slice(-15).reverse().map((item, idx) => <li key={`${item.repo}-${item.path}-${idx}`}><strong>{item.repo}</strong> · {item.path} <span className="small">({item.reason})</span></li>)}</ul>
+    </details>}
+  </div>;
 }
 
 function ContextPanel({ context }: { context: ContextSummary | null }) {

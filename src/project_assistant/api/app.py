@@ -13,6 +13,7 @@ from ..change_gate import ChangeGate
 from ..config import ProjectConfig, SourceRoot
 from ..conversations import ConversationStore
 from ..knowledge_graph import KnowledgeGraph
+from ..index_status import IndexStatusStore
 from ..security import load_or_create_api_token, tokens_equal, validate_source_root
 from .dependencies import assistant_for, invalidate, project_path, registry
 from .schemas import (
@@ -31,7 +32,7 @@ from .schemas import (
 
 
 API_TOKEN = load_or_create_api_token()
-app = FastAPI(title="Local Project Assistant", version="0.6.6")
+app = FastAPI(title="Local Project Assistant", version="0.6.7")
 app.add_middleware(TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost", "testserver"])
 
 
@@ -91,7 +92,7 @@ def _sse(event: str, payload: dict | str) -> str:
 
 @app.get("/health")
 def health() -> dict:
-    return {"status": "ok", "version": "0.6.6"}
+    return {"status": "ok", "version": "0.6.7"}
 
 
 @app.get("/api/status")
@@ -101,7 +102,7 @@ def status() -> dict:
 
     settings = PortkeySettings.from_env()
     return {
-        "version": "0.6.6",
+        "version": "0.6.7",
         "projects_root": str(registry.projects_root),
         "portkey": {
             "base_url": settings.base_url,
@@ -234,6 +235,14 @@ async def index_project(project_id: str) -> dict:
     try:
         assistant = assistant_for(project_id, refresh=True)
         return await asyncio.to_thread(assistant.indexer.index_changed)
+    except Exception as exc:
+        raise _error(exc)
+
+@app.get("/api/projects/{project_id}/index-status")
+def get_index_status(project_id: str) -> dict:
+    try:
+        root = project_path(project_id)
+        return IndexStatusStore(root / ".assistant/index_status.json").status.to_dict()
     except Exception as exc:
         raise _error(exc)
 

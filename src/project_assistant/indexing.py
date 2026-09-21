@@ -16,18 +16,11 @@ from langchain_core.documents import Document
 from .code_chunking import CodeChunker
 from .config import ProjectConfig, SourceRoot
 from .knowledge_graph import KnowledgeGraph
+from .index_status import IndexStatusStore
+from .index_policy import FileEligibilityPolicy
 from .lexical_index import LexicalHit, LexicalIndex
 from .repo_catalog import RepositoryCatalog
 from .security import EgressPolicy, private_file, path_is_within
-
-
-TEXT_EXTENSIONS = {
-    ".py", ".js", ".jsx", ".ts", ".tsx", ".java", ".kt", ".kts", ".go", ".rs",
-    ".c", ".h", ".cpp", ".hpp", ".sh", ".bash", ".zsh", ".sql", ".yml", ".yaml",
-    ".json", ".md", ".markdown", ".txt", ".toml", ".ini", ".cfg", ".conf", ".xml",
-    ".rexx", ".rex", ".jcl", ".proc", ".cob", ".cbl", ".cobol", ".pli", ".pl1",
-}
-SKIP_DIRS = {".git", ".venv", "venv", "node_modules", "dist", "build", "target", ".next", ".idea", ".vscode", "chroma", "__pycache__"}
 
 
 @dataclass(frozen=True)
@@ -45,10 +38,12 @@ class IncrementalIndexer:
         self.embedding_function = embedding_function
         self.chroma_path = self.project_dir / ".assistant/chroma"
         self.manifest_path = self.project_dir / ".assistant/index_manifest.json"
+        self.status_store = IndexStatusStore(self.project_dir / ".assistant/index_status.json")
         self.graph = KnowledgeGraph(self.project_dir / ".assistant/knowledge_graph.sqlite3")
         self.lexical = LexicalIndex(self.project_dir / ".assistant/lexical.sqlite3")
         self.catalog = RepositoryCatalog(self.project_dir / ".assistant/repo_catalog.json")
         self.egress = EgressPolicy()
+        self.file_policy = FileEligibilityPolicy(self.egress)
         self.db = Chroma(
             persist_directory=str(self.chroma_path),
             embedding_function=embedding_function,
@@ -58,43 +53,83 @@ class IncrementalIndexer:
         self._git_cache: dict[str, dict[str, str | None]] = {}
 
     def index_changed(self) -> dict[str, int]:
+        self.status_store.start()
         manifest = self._load_manifest()
         current: dict[str, tuple[SourceRoot, Path]] = {}
-        for source in self._all_sources():
-            root = Path(source.path)
-            if not root.exists():
-                continue
-            for path in self._iter_files(root, use_git=(root.resolve() != self.project_dir)):
-                current[str(path.resolve())] = (source, path)
+        try:
+            for source in self._all_sources():
+                root = Path(source.path).resolve()
+                if not root.exists():
+                    continue
+                for path in self._iter_candidates(root, use_git=(root != self.project_dir)):
+                    rel = self._relative(path, root)
+                    repo_stats = self.status_store.repo(source.name)
+                    self.status_store.status.scanned += 1
+                    repo_stats.scanned += 1
+                    allowed, reason = self._embedding_eligibility(path, root)
+                    if not allowed:
+                        self.status_store.skipped(source.name, rel, reason or "excluded")
+                        continue
+                    self.status_store.status.eligible += 1
+                    repo_stats.eligible += 1
+                    current[str(path.resolve())] = (source, path)
 
-        old_paths = set(manifest)
-        current_paths = set(current)
-        deleted = old_paths - current_paths
-        for source_path in deleted:
-            self._delete_manifest_entry(manifest, source_path)
-            self.graph.remove_source(source_path)
-
-        added = changed = unchanged = local_only = 0
-        for source_path, (source, path) in current.items():
-            fingerprint = self._fingerprint(path)
-            record = manifest.get(source_path)
-            if record and record.get("fingerprint") == fingerprint:
-                unchanged += 1
-                continue
-            if record:
+            old_paths = set(manifest)
+            current_paths = set(current)
+            deleted = old_paths - current_paths
+            for source_path in deleted:
                 self._delete_manifest_entry(manifest, source_path)
                 self.graph.remove_source(source_path)
-                changed += 1
-            else:
-                added += 1
-            indexed = self._index_one(source, path, fingerprint)
-            manifest[source_path] = indexed
-            if not indexed.get("vector_indexed", True):
-                local_only += 1
+            self.status_store.status.deleted = len(deleted)
 
-        self._save_manifest(manifest)
-        self.catalog.rebuild(self.config.resolved_sources(self.project_dir), manifest)
-        return {"added": added, "changed": changed, "deleted": len(deleted), "unchanged": unchanged, "local_only": local_only}
+            added = changed = unchanged = local_only = 0
+            for source_path, (source, path) in current.items():
+                rel = self._relative(path, Path(source.path))
+                self.status_store.current(source.name, rel)
+                fingerprint = self._fingerprint(path)
+                record = manifest.get(source_path)
+                if record and record.get("fingerprint") == fingerprint:
+                    unchanged += 1
+                    self.status_store.status.unchanged += 1
+                    self.status_store.repo(source.name).unchanged += 1
+                    continue
+                if record:
+                    self._delete_manifest_entry(manifest, source_path)
+                    self.graph.remove_source(source_path)
+                    changed += 1
+                    self.status_store.status.changed += 1
+                else:
+                    added += 1
+                    self.status_store.status.added += 1
+
+                indexed = self._index_one(source, path, fingerprint)
+                manifest[source_path] = indexed
+                self._save_manifest(manifest)
+                repo_stats = self.status_store.repo(source.name)
+                repo_stats.indexed += 1
+                repo_stats.chunks += len(indexed.get("chunk_ids", []))
+                self.status_store.status.indexed += 1
+                self.status_store.status.chunks += len(indexed.get("chunk_ids", []))
+                if not indexed.get("vector_indexed", True):
+                    local_only += 1
+                    if indexed.get("embedding_error"):
+                        reason = "embedding-rejected"
+                    elif indexed.get("egress_blocked"):
+                        reason = "egress-blocked"
+                    elif not indexed.get("chunk_ids"):
+                        reason = "empty"
+                    else:
+                        reason = "local-only"
+                    self.status_store.local_only(source.name, rel, reason)
+                self.status_store.save()
+
+            self._save_manifest(manifest)
+            self.catalog.rebuild(self.config.resolved_sources(self.project_dir), manifest)
+            self.status_store.finish()
+            return {"added": added, "changed": changed, "deleted": len(deleted), "unchanged": unchanged, "local_only": local_only, "skipped": self.status_store.status.skipped, "chunks": self.status_store.status.chunks}
+        except Exception as exc:
+            self.status_store.fail(f"{type(exc).__name__}: {exc}")
+            raise
 
     def index_specific_file(self, path: Path) -> None:
         path = path.resolve()
@@ -189,14 +224,12 @@ class IncrementalIndexer:
                 pass
         return None
 
-    def _iter_files(self, root: Path, use_git: bool = True) -> Iterable[Path]:
+    def _iter_candidates(self, root: Path, use_git: bool = True) -> Iterable[Path]:
         root = root.resolve()
         if use_git:
             git_files = self._git_files(root)
             if git_files is not None:
-                for path in git_files:
-                    if self._supported(path) and self.egress.path_allowed(path):
-                        yield path
+                yield from git_files
                 return
         for current_root, dirs, files in os.walk(root):
             dirs[:] = [d for d in dirs if d not in SKIP_DIRS]
@@ -206,7 +239,6 @@ class IncrementalIndexer:
                     path = unresolved.resolve()
                 except OSError:
                     continue
-                # A symlinked file must not escape the registered source root.
                 if not path_is_within(root, path):
                     continue
                 if root == self.project_dir:
@@ -214,12 +246,18 @@ class IncrementalIndexer:
                     if rel.parts and rel.parts[0] == ".assistant":
                         if len(rel.parts) < 2 or rel.parts[1] not in {"conversations", "generated"}:
                             continue
-                if self._supported(path) and self.egress.path_allowed(path):
-                    yield path
+                yield path
 
-    @staticmethod
-    def _supported(path: Path) -> bool:
-        return path.name == "PROJECT.md" or path.suffix.lower() in TEXT_EXTENSIONS | {".pdf"}
+    def _iter_files(self, root: Path, use_git: bool = True) -> Iterable[Path]:
+        # Backwards-compatible helper used by tests/callers that only want files
+        # eligible for local parsing + remote embeddings.
+        for path in self._iter_candidates(root, use_git=use_git):
+            allowed, _ = self._embedding_eligibility(path, root.resolve())
+            if allowed:
+                yield path
+
+    def _embedding_eligibility(self, path: Path, root: Path) -> tuple[bool, str | None]:
+        return self.file_policy.classify(path)
 
     def _index_one(self, source: SourceRoot, path: Path, fingerprint: str) -> dict:
         docs = self._load_documents(source, path)
@@ -243,8 +281,20 @@ class IncrementalIndexer:
 
         findings = sorted({finding for chunk in docs for finding in self.egress.findings(chunk.page_content)})
         vector_indexed = bool(docs) and not findings
+        embedding_error = None
         if vector_indexed:
-            self.db.add_documents(docs, ids=chunk_ids)
+            try:
+                self.db.add_documents(docs, ids=chunk_ids)
+            except Exception as exc:
+                # Keep lexical/graph retrieval available and continue the wider
+                # indexing run when a provider rejects one particular source file.
+                vector_indexed = False
+                embedding_error = f"{type(exc).__name__}: {exc}"
+                try:
+                    self.db.delete(ids=chunk_ids)
+                except Exception:
+                    pass
+                self._security_event(path, "remote embedding skipped: " + embedding_error)
         elif findings:
             self._security_event(path, "embedding blocked: " + ", ".join(findings))
 
@@ -262,6 +312,7 @@ class IncrementalIndexer:
             "git_commit": git.get("commit"),
             "vector_indexed": vector_indexed,
             "egress_blocked": findings,
+            "embedding_error": embedding_error,
         }
 
     def _load_documents(self, source: SourceRoot, path: Path) -> list[Document]:
@@ -310,7 +361,22 @@ class IncrementalIndexer:
             grouped.append(Document(page_content=text, metadata={**base, "page_start": group[0].metadata["page"], "page_end": group[-1].metadata["page"], "language": "pdf"}))
             if start + window >= len(pages):
                 break
-        return grouped
+        return self._bound_documents(grouped)
+
+    def _bound_documents(self, docs: list[Document]) -> list[Document]:
+        limit = self.chunker.max_chars
+        bounded: list[Document] = []
+        for doc in docs:
+            text = doc.page_content
+            if len(text) <= limit:
+                bounded.append(doc)
+                continue
+            for index, start in enumerate(range(0, len(text), limit), start=1):
+                part = text[start:start + limit].strip()
+                if not part:
+                    continue
+                bounded.append(Document(page_content=part, metadata={**doc.metadata, "part": index}))
+        return bounded
 
     def _security_event(self, path: Path, message: str) -> None:
         log = self.project_dir / ".assistant/security_events.log"

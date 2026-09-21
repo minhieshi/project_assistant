@@ -37,7 +37,7 @@ Restore the high-value parts of the enterprise ChatGPT browser experience locall
 
 ## Current work
 
-v0.6.3 hardens the Portkey integration: Titan embeddings now use an exact direct-HTTP schema, and chat requests explicitly use the enterprise-supported `high` reasoning level with a connectivity/streaming test command.
+v0.6.7 makes multi-repo indexing safer and observable: unsuitable artefacts are excluded before embedding, final chunks are hard-bounded, provider-rejected files remain local-only, and the UI shows persisted per-repo indexing progress and skip reasons.
 
 ## Known issues
 
@@ -81,3 +81,11 @@ The configured enterprise embedding route is `@bedrock-au/amazon.titan-embed-tex
 ## v0.6.6 embedding transport
 
 Embedding transport is intentionally a literal Python equivalent of the confirmed working curl: POST `{PORTKEY_BASE_URL}/embeddings`, send `x-portkey-api-key` and JSON content type, and serialize only `model` plus raw `input`. No embedding SDK or provider-specific translation is permitted on this path.
+
+
+## v0.6.7 safe indexing and visibility
+
+- Automatically exclude archive/compiled/binary/unsupported/sensitive/oversized/generated/minified artefacts before Portkey embedding.
+- Hard-bound every final source/PDF chunk so pathological long lines cannot exceed the configured embedding chunk size.
+- Preserve local lexical/graph access when a particular file cannot be embedded remotely.
+- Persist index progress and per-repo statistics to `.assistant/index_status.json` and surface them in the web UI.

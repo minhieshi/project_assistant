@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.6.7
+
+- Added pre-index file classification with explicit skip reasons for archives, compiled/binary artefacts, unsupported types, sensitive paths, oversized files, large generated source and minified/extreme-long-line content.
+- Added hard final chunk bounds so a single enormous source line can no longer bypass the chunk-size limit; PDF windows are hard-bounded as well.
+- A provider rejection for one eligible file no longer aborts the whole repository: the file remains available through local lexical/graph retrieval and is marked `embedding-rejected` / local-only.
+- Added persisted `.assistant/index_status.json` with live/current file, totals, per-repo counts, skip/local-only reasons and recent skipped files.
+- Added `/api/projects/{id}/index-status` and a web **Index visibility** panel that polls while indexing is running.
+- Index manifests are saved after each changed/new file so completed work is resumable if a later file fails.
+- Added regression coverage for hard single-line bounds, archive/compiled/generated exclusions and index-status persistence; backend/core suite is now 32 passing tests.
+
 ## v0.6.6
 
 - Replaced the embedding SDK path with raw HTTP that exactly mirrors the confirmed working curl request.

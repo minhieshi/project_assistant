@@ -1,4 +1,4 @@
-# Local Project Assistant — v0.6.6
+# Local Project Assistant — v0.6.7
 
 A local-first engineering workbench for source-heavy enterprise work: persistent Markdown conversations, multi-repo RAG, deterministic knowledge graph, context compilation and two-stage approval-gated code changes.
 
@@ -161,7 +161,7 @@ Code chunks retain repo/path/language/symbol/line metadata. Git-backed repos use
 Backend:
 
 ```bash
-cd project-assistant-v0.6.6
+cd project-assistant-v0.6.7
 python -m venv .venv
 source .venv/bin/activate
 pip install -e .
@@ -206,7 +206,7 @@ The enterprise chat route is treated as an opaque Portkey model identifier and i
 project-assistant chat-test
 ```
 
-Both embeddings and chat now use Portkey's Python SDK directly. `PORTKEY_API_KEY` remains environment-backed and is passed to the SDK at runtime; there is no hard-coded or placeholder Portkey credential in the inference path.
+Embeddings use the exact raw-HTTP request shape proven by the working enterprise curl; chat uses the Portkey Python SDK. `PORTKEY_API_KEY` remains environment-backed and there is no hard-coded Portkey credential in the inference path.
 
 A healthy Titan V2 route should print approximately:
 
@@ -215,6 +215,12 @@ OK model=@bedrock-au/amazon.titan-embed-text-v2:0 dimensions=1024
 ```
 
 Only after that succeeds should you run the initial repository index.
+
+### Safe source filtering and indexing visibility
+
+v0.6.7 classifies Git-tracked files before parsing/embedding. Archives (`.jar`, `.war`, `.zip`, etc.), compiled artefacts (`.class`, native binaries), sensitive paths, unsupported formats, binary content, oversized text/PDFs, large generated source files, and minified/extreme-long-line payloads are skipped automatically instead of being sent to Portkey. Ordinary source code is still structurally chunked, and every final chunk is hard-bounded even when a single source line is enormous.
+
+The latest run is persisted to `.assistant/index_status.json` and shown in **Project → Index visibility** with per-repo scanned/indexed/unchanged/skipped/local-only/chunk counts, skip reasons, the current file during an active run, and recent skipped files. If Portkey rejects one otherwise eligible file, it is retained in local FTS/knowledge-graph retrieval as `embedding-rejected` and indexing continues.
 
 Frontend:
 
@@ -374,7 +380,7 @@ A newly created managed project is its own local Git repo:
 PYTHONPATH=src python -m unittest discover -s tests -v
 ```
 
-v0.6.6 has backend/core regression tests covering the two-stage approval gate, patch tampering, HEAD changes, secret detection, path traversal, API authentication, retrieval and graph behaviour.
+v0.6.7 has 32 backend/core regression tests covering the approval gate, retrieval/graph behaviour, API authentication, embedding request shape, hard chunk bounds, source-file exclusion policy, and persisted indexing visibility.
 
 After `npm install`:
 

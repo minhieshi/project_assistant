@@ -388,7 +388,7 @@ class WebFoundationTests(unittest.TestCase):
     def test_api_app_imports_without_initialising_rag(self):
         from project_assistant.api.app import app
 
-        self.assertEqual(app.version, "0.6.6")
+        self.assertEqual(app.version, "0.6.7")
 
     def test_portkey_url_is_explicit_and_does_not_default_public(self):
         from project_assistant.config import PortkeySettings
@@ -405,6 +405,55 @@ class WebFoundationTests(unittest.TestCase):
         self.assertEqual(client.get("/api/projects").status_code, 401)
         response = client.get("/api/projects", headers={"x-project-assistant-token": API_TOKEN})
         self.assertEqual(response.status_code, 200)
+
+
+class IndexSafetyTests(unittest.TestCase):
+    def test_chunker_hard_bounds_a_single_very_long_line(self):
+        from project_assistant.code_chunking import CodeChunker
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "generated.java"
+            text = "x" * 20_000
+            chunks = CodeChunker(max_chars=2400).chunk_file(path, text)
+            self.assertGreater(len(chunks), 1)
+            self.assertTrue(all(len(chunk.text) <= 2400 for chunk in chunks))
+            self.assertTrue(all(chunk.start_line == 1 and chunk.end_line == 1 for chunk in chunks))
+
+    def test_index_policy_excludes_archives_compiled_and_large_generated_source(self):
+        from project_assistant.index_policy import FileEligibilityPolicy
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            jar = root / "lib.jar"
+            jar.write_bytes(b"PK\x03\x04")
+            clazz = root / "Thing.class"
+            clazz.write_bytes(b"\xca\xfe\xba\xbe")
+            generated = root / "HugeGenerated.java"
+            generated.write_text("// AUTO-GENERATED - DO NOT EDIT\n" + ("class X {}\n" * 20_000), encoding="utf-8")
+
+            policy = FileEligibilityPolicy()
+            self.assertEqual(policy.classify(jar), (False, "archive"))
+            self.assertEqual(policy.classify(clazz), (False, "compiled-binary"))
+            self.assertEqual(policy.classify(generated), (False, "generated-large-source"))
+
+    def test_index_status_persists_skip_reasons_and_repo_counts(self):
+        from project_assistant.index_status import IndexStatusStore
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "index_status.json"
+            store = IndexStatusStore(path)
+            store.start()
+            store.status.scanned += 1
+            store.repo("repo-a").scanned += 1
+            store.skipped("repo-a", "lib/example.jar", "archive")
+            store.finish()
+
+            loaded = IndexStatusStore(path).status
+            self.assertEqual(loaded.state, "completed")
+            self.assertEqual(loaded.skipped, 1)
+            self.assertEqual(loaded.skip_reasons["archive"], 1)
+            self.assertEqual(loaded.repos["repo-a"].skipped, 1)
+
 
 
 class TitanEmbeddingTests(unittest.TestCase):

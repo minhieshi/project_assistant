@@ -74,3 +74,39 @@ export type AppStatus = {
     embedding_model_configured: boolean;
   };
 };
+
+export type RepoIndexStats = {
+  scanned: number;
+  eligible: number;
+  indexed: number;
+  unchanged: number;
+  skipped: number;
+  local_only: number;
+  failed: number;
+  chunks: number;
+};
+
+export type IndexStatus = {
+  state: "idle" | "running" | "completed" | "failed";
+  started_at?: string | null;
+  finished_at?: string | null;
+  current_repo?: string | null;
+  current_file?: string | null;
+  scanned: number;
+  eligible: number;
+  indexed: number;
+  unchanged: number;
+  skipped: number;
+  local_only: number;
+  failed: number;
+  added: number;
+  changed: number;
+  deleted: number;
+  chunks: number;
+  skip_reasons: Record<string, number>;
+  local_only_reasons: Record<string, number>;
+  repos: Record<string, RepoIndexStats>;
+  recent_skips: Array<{ repo: string; path: string; reason: string }>;
+  recent_local_only: Array<{ repo: string; path: string; reason: string }>;
+  last_error?: string | null;
+};

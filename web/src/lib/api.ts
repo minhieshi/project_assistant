@@ -6,6 +6,7 @@ import type {
   ProjectConversion,
   Proposal,
   AppStatus,
+  IndexStatus,
 } from "./types";
 
 const API_BASE = "/api/backend";
@@ -40,6 +41,7 @@ export const api = {
   addSource: (id: string, path: string, name?: string) => request<Project>(`/projects/${id}/sources`, { method: "POST", body: JSON.stringify({ path, name: name || null }) }),
   removeSource: (id: string, name: string) => request<Project>(`/projects/${id}/sources/${encodeURIComponent(name)}`, { method: "DELETE" }),
   indexProject: (id: string) => request<Record<string, number>>(`/projects/${id}/index`, { method: "POST" }),
+  indexStatus: (id: string) => request<IndexStatus>(`/projects/${id}/index-status`),
   conversations: (id: string) => request<ConversationSummary[]>(`/projects/${id}/conversations`),
   createConversation: (id: string, title: string) => request<ConversationSummary>(`/projects/${id}/conversations`, { method: "POST", body: JSON.stringify({ title }) }),
   conversation: (projectId: string, conversationId: string) => request<ConversationDetail>(`/projects/${projectId}/conversations/${conversationId}`),

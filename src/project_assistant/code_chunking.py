@@ -265,11 +265,24 @@ class CodeChunker:
         chunks: list[CodeChunk] = []
         start = 0
         while start < len(lines):
+            # A single minified/generated line must never bypass max_chars.
+            # Split it directly while preserving the source line number.
+            if len(lines[start]) > self.max_chars:
+                raw = lines[start].rstrip("\n")
+                for offset in range(0, len(raw), self.max_chars):
+                    part = raw[offset:offset + self.max_chars]
+                    if part:
+                        chunks.append(CodeChunk(part, start + 1, start + 1, None, None, language))
+                start += 1
+                continue
+
             chars = 0
             end = start
-            while end < len(lines) and (chars + len(lines[end]) <= self.max_chars or end == start):
+            while end < len(lines) and chars + len(lines[end]) <= self.max_chars:
                 chars += len(lines[end])
                 end += 1
+            if end == start:
+                end = start + 1
             chunks.append(CodeChunk("".join(lines[start:end]).rstrip(), start + 1, end, None, None, language))
             if end >= len(lines):
                 break
