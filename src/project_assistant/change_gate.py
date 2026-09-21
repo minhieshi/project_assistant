@@ -25,12 +25,14 @@ class ChangeProposal:
     status: str
     created_at: str
     plan_approved_at: str | None = None
+    approved_actions: list[str] | None = None
     repo_path: str | None = None
     patch_file: str | None = None
     patch_sha256: str | None = None
     base_commit: str | None = None
     patch_staged_at: str | None = None
     patch_approved_at: str | None = None
+    patch_approval_checks: list[str] | None = None
     applied_at: str | None = None
 
 
@@ -76,17 +78,21 @@ class ChangeGate:
         self._save(proposal)
         return proposal
 
-    def approve_plan(self, proposal_id: str) -> ChangeProposal:
+    def approve_plan(self, proposal_id: str, approved_actions: list[str] | None = None) -> ChangeProposal:
         proposal = self.get(proposal_id)
         if proposal.status != "pending":
             raise PermissionError(f"Plan approval is not permitted while proposal is {proposal.status}")
+        actions = [item.strip() for item in (approved_actions or []) if item and item.strip()]
         proposal.status = "plan_approved"
         proposal.plan_approved_at = _now()
+        proposal.approved_actions = actions or ["Proposed implementation plan as written"]
         self._save(proposal)
         self.conversations.append_event(
             proposal.conversation_id,
             f"Change proposal {proposal.id} — PLAN APPROVED",
-            "Plan approval recorded. A candidate diff may now be prepared, but source mutation is still forbidden until the exact staged diff is separately approved.",
+            "Plan approval recorded for the following scope:\n\n"
+            + "\n".join(f"- {item}" for item in proposal.approved_actions)
+            + "\n\nA candidate diff may now be prepared within this approved scope, but source mutation is still forbidden until the exact staged diff is separately approved.",
         )
         return proposal
 
@@ -157,18 +163,23 @@ class ChangeGate:
         )
         return proposal
 
-    def approve_patch(self, proposal_id: str) -> ChangeProposal:
+    def approve_patch(self, proposal_id: str, approval_checks: list[str] | None = None) -> ChangeProposal:
         proposal = self.get(proposal_id)
         if proposal.status != "patch_pending":
             raise PermissionError(f"Diff approval is not permitted while proposal is {proposal.status}")
         self._verify_bound_patch(proposal)
+        checks = [item.strip() for item in (approval_checks or []) if item and item.strip()]
         proposal.status = "patch_approved"
         proposal.patch_approved_at = _now()
+        proposal.patch_approval_checks = checks or ["Reviewed and approved the exact staged diff"]
         self._save(proposal)
         self.conversations.append_event(
             proposal.conversation_id,
             f"Change proposal {proposal.id} — DIFF APPROVED",
-            f"Approved exact patch `{proposal.patch_sha256}` against base commit `{proposal.base_commit}`. Only this stored diff may now be applied.",
+            f"Approved exact patch `{proposal.patch_sha256}` against base commit `{proposal.base_commit}`.\n\n"
+            + "Approval confirmations:\n"
+            + "\n".join(f"- {item}" for item in proposal.patch_approval_checks)
+            + "\n\nOnly this stored diff may now be applied.",
         )
         return proposal
 

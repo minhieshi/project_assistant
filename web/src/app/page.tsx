@@ -249,11 +249,11 @@ export default function Home() {
     }
   }
 
-  async function proposalAction(proposal: Proposal, action: "approve-plan" | "reject") {
+  async function proposalAction(proposal: Proposal, action: "approve-plan" | "reject", approvedActions: string[] = []) {
     if (!projectId) return;
     setBusy(true); setError("");
     try {
-      if (action === "approve-plan") await api.approvePlan(projectId, proposal.id);
+      if (action === "approve-plan") await api.approvePlan(projectId, proposal.id, approvedActions);
       else await api.reject(projectId, proposal.id);
       if (conversationId) await loadConversation(projectId, conversationId);
     } catch (e) { setError(String(e)); } finally { setBusy(false); }
@@ -270,7 +270,7 @@ export default function Home() {
   return (
     <div className="app-shell">
       <aside className="sidebar">
-        <div className="brand">Project Assistant <span className="small">v0.7.2</span></div>
+        <div className="brand">Project Assistant <span className="small">v0.7.3</span></div>
         {appStatus && <div className="notice" style={{ marginBottom: 12 }}>Projects: {appStatus.projects_root}<br />Portkey: {appStatus.portkey.base_url_configured ? "URL configured" : "URL missing"}</div>}
 
         <div className="section-title">Projects</div>
@@ -541,11 +541,44 @@ function ContextPanel({ context }: { context: ContextSummary | null }) {
   </>;
 }
 
-function ProposalCard({ proposal, projectId, busy, onAction, onApplied }: { proposal: Proposal; projectId: string; busy: boolean; onAction: (proposal: Proposal, action: "approve-plan" | "reject") => void; onApplied: () => Promise<void> }) {
+function approvalItemsFromPlan(plan: string): string[] {
+  const seen = new Set<string>();
+  const items: string[] = [];
+  for (const line of plan.split(/\r?\n/)) {
+    const match = line.match(/^\s*(?:[-*+]\s+|\d+[.)]\s+)(?:\[[ xX]\]\s*)?(.+?)\s*$/);
+    if (!match) continue;
+    const item = match[1].replace(/^\*\*(.+)\*\*$/, "$1").trim();
+    if (!item || seen.has(item)) continue;
+    seen.add(item);
+    items.push(item);
+    if (items.length >= 12) break;
+  }
+  return items.length > 0 ? items : ["Approve the proposed implementation plan as written"];
+}
+
+function ProposalCard({ proposal, projectId, busy, onAction, onApplied }: { proposal: Proposal; projectId: string; busy: boolean; onAction: (proposal: Proposal, action: "approve-plan" | "reject", approvedActions?: string[]) => void; onApplied: () => Promise<void> }) {
   const [patchPath, setPatchPath] = useState("");
   const [repoPath, setRepoPath] = useState(proposal.repo_path ?? "");
   const [localError, setLocalError] = useState("");
   const [working, setWorking] = useState(false);
+  const planItems = useMemo(() => approvalItemsFromPlan(proposal.plan), [proposal.plan]);
+  const [selectedPlanActions, setSelectedPlanActions] = useState<string[]>([]);
+  const [diffChecks, setDiffChecks] = useState<string[]>([]);
+  const [applyConfirmed, setApplyConfirmed] = useState(false);
+
+  useEffect(() => {
+    if (proposal.status === "pending") setSelectedPlanActions([]);
+    if (proposal.status === "patch_pending") setDiffChecks([]);
+    if (proposal.status === "patch_approved") setApplyConfirmed(false);
+  }, [proposal.id, proposal.status]);
+
+  function togglePlanAction(item: string) {
+    setSelectedPlanActions((current) => current.includes(item) ? current.filter((value) => value !== item) : [...current, item]);
+  }
+
+  function toggleDiffCheck(item: string) {
+    setDiffChecks((current) => current.includes(item) ? current.filter((value) => value !== item) : [...current, item]);
+  }
 
   async function run(action: () => Promise<unknown>) {
     setWorking(true); setLocalError("");
@@ -561,10 +594,19 @@ function ProposalCard({ proposal, projectId, busy, onAction, onApplied }: { prop
     <div className="row" style={{ justifyContent: "space-between" }}><h3>{proposal.id}</h3><span className={`badge ${proposal.status}`}>{statusLabel}</span></div>
     <div className="small" style={{ marginBottom: 6 }}>{timeLabel(proposal.created_at)}</div>
     <pre>{proposal.plan}</pre>
+    {proposal.approved_actions && proposal.approved_actions.length > 0 && proposal.status !== "pending" && <div className="approval-summary"><strong>Approved plan scope</strong><ul>{proposal.approved_actions.map((item) => <li key={item}>✓ {item}</li>)}</ul></div>}
 
-    {proposal.status === "pending" && <div className="row" style={{ marginTop: 10 }}>
-      <button className="btn primary" disabled={busy || working} onClick={() => onAction(proposal, "approve-plan")}>Approve plan</button>
-      <button className="btn danger" disabled={busy || working} onClick={() => onAction(proposal, "reject")}>Reject</button>
+    {proposal.status === "pending" && <div className="approval-panel" style={{ marginTop: 12 }}>
+      <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
+        <strong>Approval scope</strong>
+        <button className="btn compact" type="button" disabled={busy || working} onClick={() => setSelectedPlanActions(selectedPlanActions.length === planItems.length ? [] : [...planItems])}>{selectedPlanActions.length === planItems.length ? "Clear all" : "Select all"}</button>
+      </div>
+      <div className="small" style={{ marginTop: 4 }}>Tick only the actions you want to approve for candidate-diff preparation. This does not permit source changes.</div>
+      <div className="approval-checks">{planItems.map((item) => <label className="approval-check" key={item}><input type="checkbox" checked={selectedPlanActions.includes(item)} onChange={() => togglePlanAction(item)} /><span>{item}</span></label>)}</div>
+      <div className="row" style={{ marginTop: 10 }}>
+        <button className="btn primary" disabled={busy || working || selectedPlanActions.length === 0} onClick={() => onAction(proposal, "approve-plan", selectedPlanActions)}>Approve selected actions</button>
+        <button className="btn danger" disabled={busy || working} onClick={() => onAction(proposal, "reject")}>Reject</button>
+      </div>
     </div>}
 
     {proposal.status === "plan_approved" && <div className="form-stack" style={{ marginTop: 12 }}>
@@ -582,14 +624,26 @@ function ProposalCard({ proposal, projectId, busy, onAction, onApplied }: { prop
       {hasPatch && <div className="context-text" style={{ marginTop: 8 }}>{proposal.patch_text}</div>}
     </div>}
 
-    {proposal.status === "patch_pending" && <div className="row" style={{ marginTop: 10 }}>
-      <button className="btn primary" disabled={busy || working} onClick={() => void run(() => api.approvePatch(projectId, proposal.id))}>Approve exact diff</button>
-      <button className="btn danger" disabled={busy || working} onClick={() => onAction(proposal, "reject")}>Reject</button>
+    {proposal.status === "patch_pending" && <div className="approval-panel" style={{ marginTop: 12 }}>
+      <strong>Approve exact diff</strong>
+      <div className="small" style={{ marginTop: 4 }}>All confirmations below are required before the immutable staged diff can be approved.</div>
+      <div className="approval-checks">{[
+        "I have reviewed the exact diff shown above",
+        `I approve changes to ${proposal.repo_path ?? "the registered repository"}`,
+        `I approve this exact SHA-256 against base commit ${(proposal.base_commit ?? "").slice(0, 12) || "shown above"}`,
+      ].map((item) => <label className="approval-check" key={item}><input type="checkbox" checked={diffChecks.includes(item)} onChange={() => toggleDiffCheck(item)} /><span>{item}</span></label>)}</div>
+      <div className="row" style={{ marginTop: 10 }}>
+        <button className="btn primary" disabled={busy || working || diffChecks.length < 3} onClick={() => void run(() => api.approvePatch(projectId, proposal.id, diffChecks))}>Approve exact diff</button>
+        <button className="btn danger" disabled={busy || working} onClick={() => onAction(proposal, "reject")}>Reject</button>
+      </div>
     </div>}
 
-    {proposal.status === "patch_approved" && <div className="form-stack" style={{ marginTop: 10 }}>
+    {proposal.patch_approval_checks && proposal.patch_approval_checks.length > 0 && (proposal.status === "patch_approved" || proposal.status === "applied") && <div className="approval-summary"><strong>Diff approval recorded</strong><ul>{proposal.patch_approval_checks.map((item) => <li key={item}>✓ {item}</li>)}</ul></div>}
+
+    {proposal.status === "patch_approved" && <div className="approval-panel" style={{ marginTop: 10 }}>
       <div className="small">Only the hashed diff shown above can be applied. The backend rechecks the hash, repo, HEAD commit and <code>git apply --check</code> immediately before mutation.</div>
-      <button className="btn primary" disabled={busy || working} onClick={() => void run(() => api.applyPatch(projectId, proposal.id))}>{working ? "Applying…" : "Apply approved diff"}</button>
+      <label className="approval-check" style={{ marginTop: 10 }}><input type="checkbox" checked={applyConfirmed} onChange={(event) => setApplyConfirmed(event.target.checked)} /><span>Apply this already-approved exact diff to the working tree now</span></label>
+      <button className="btn primary" disabled={busy || working || !applyConfirmed} onClick={() => void run(() => api.applyPatch(projectId, proposal.id))}>{working ? "Applying…" : "Apply approved diff"}</button>
     </div>}
 
     {localError && <div className="error" style={{ marginTop: 8 }}>{localError}</div>}

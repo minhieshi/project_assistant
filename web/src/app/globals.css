@@ -97,3 +97,47 @@ select.input { appearance: auto; }
 .markdown a { color: #bfc9ff; text-decoration: underline; text-underline-offset: 2px; }
 .markdown hr { border: 0; border-top: 1px solid var(--line); margin: 20px 0; }
 
+
+.approval-panel {
+  border: 1px solid var(--border, #d8d8d8);
+  border-radius: 10px;
+  padding: 12px;
+  background: color-mix(in srgb, var(--panel, #ffffff) 94%, transparent);
+}
+
+.approval-checks {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.approval-check {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  line-height: 1.35;
+  cursor: pointer;
+}
+
+.approval-check input[type="checkbox"] {
+  margin-top: 3px;
+  flex: 0 0 auto;
+}
+
+.approval-summary {
+  margin-top: 10px;
+  padding: 10px 12px;
+  border-left: 3px solid currentColor;
+  background: rgba(127, 127, 127, 0.08);
+  border-radius: 6px;
+}
+
+.approval-summary ul {
+  margin: 6px 0 0 18px;
+  padding: 0;
+}
+
+.btn.compact {
+  padding: 5px 8px;
+  font-size: 0.78rem;
+}

@@ -44,12 +44,14 @@ export type Proposal = {
   status: "pending" | "plan_approved" | "patch_pending" | "patch_approved" | "rejected" | "applied";
   created_at: string;
   plan_approved_at?: string | null;
+  approved_actions?: string[] | null;
   repo_path?: string | null;
   patch_file?: string | null;
   patch_sha256?: string | null;
   base_commit?: string | null;
   patch_staged_at?: string | null;
   patch_approved_at?: string | null;
+  patch_approval_checks?: string[] | null;
   applied_at?: string | null;
   patch_text?: string | null;
 };

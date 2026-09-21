@@ -26,6 +26,8 @@ from .schemas import (
     ProjectConvertToSourceRequest,
     ProjectPathRequest,
     ProposalRequest,
+    PlanApprovalRequest,
+    PatchApprovalRequest,
     QueryRequest,
     SourceRequest,
     StagePatchRequest,
@@ -33,7 +35,7 @@ from .schemas import (
 
 
 API_TOKEN = load_or_create_api_token()
-app = FastAPI(title="Local Project Assistant", version="0.7.2")
+app = FastAPI(title="Local Project Assistant", version="0.7.3")
 app.add_middleware(TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost", "testserver"])
 
 
@@ -102,7 +104,7 @@ def _sse(event: str, payload: dict | str) -> str:
 
 @app.get("/health")
 def health() -> dict:
-    return {"status": "ok", "version": "0.7.2"}
+    return {"status": "ok", "version": "0.7.3"}
 
 
 @app.get("/api/status")
@@ -112,7 +114,7 @@ def status() -> dict:
 
     settings = PortkeySettings.from_env()
     return {
-        "version": "0.7.2",
+        "version": "0.7.3",
         "projects_root": str(registry.projects_root),
         "portkey": {
             "base_url": settings.base_url,
@@ -348,10 +350,10 @@ def list_proposals(project_id: str, conversation_id: str | None = None) -> list[
 
 
 @app.post("/api/projects/{project_id}/proposals/{proposal_id}/approve-plan")
-def approve_plan(project_id: str, proposal_id: str) -> dict:
+def approve_plan(project_id: str, proposal_id: str, body: PlanApprovalRequest | None = None) -> dict:
     try:
         gate = _gate(project_id)
-        return _proposal_payload(gate, gate.approve_plan(proposal_id))
+        return _proposal_payload(gate, gate.approve_plan(proposal_id, body.approved_actions if body else None))
     except Exception as exc:
         raise _error(exc)
 
@@ -378,10 +380,10 @@ def stage_patch(project_id: str, proposal_id: str, body: StagePatchRequest) -> d
 
 
 @app.post("/api/projects/{project_id}/proposals/{proposal_id}/approve-patch")
-def approve_patch(project_id: str, proposal_id: str) -> dict:
+def approve_patch(project_id: str, proposal_id: str, body: PatchApprovalRequest | None = None) -> dict:
     try:
         gate = _gate(project_id)
-        return _proposal_payload(gate, gate.approve_patch(proposal_id))
+        return _proposal_payload(gate, gate.approve_patch(proposal_id, body.approval_checks if body else None))
     except PermissionError as exc:
         raise _error(exc, 403)
     except Exception as exc:

@@ -76,6 +76,30 @@ class CoreTests(unittest.TestCase):
             self.assertIn("DIFF APPROVED", text)
             self.assertIn("APPLIED", text)
 
+    def test_change_gate_persists_explicit_approval_scope(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = self._git_repo(root)
+            patch_path = self._patch(root)
+            store = ConversationStore(root / ".assistant/conversations")
+            conv = store.create("Scoped approval")
+            gate = ChangeGate(root, store, allowed_repo_roots=[repo])
+            proposal = gate.create(conv.id, "Change value", "1. Update value.txt\n2. Add unrelated file")
+
+            proposal = gate.approve_plan(proposal.id, ["Update value.txt"])
+            self.assertEqual(proposal.approved_actions, ["Update value.txt"])
+            proposal = gate.stage_patch(proposal.id, patch_path, repo)
+            checks = ["Reviewed exact diff", "Approve repo", "Approve hash/base"]
+            proposal = gate.approve_patch(proposal.id, checks)
+            self.assertEqual(proposal.patch_approval_checks, checks)
+
+            reloaded = gate.get(proposal.id)
+            self.assertEqual(reloaded.approved_actions, ["Update value.txt"])
+            self.assertEqual(reloaded.patch_approval_checks, checks)
+            text = conv.path.read_text(encoding="utf-8")
+            self.assertIn("Update value.txt", text)
+            self.assertIn("Reviewed exact diff", text)
+
     def test_tampered_staged_patch_cannot_be_approved(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -398,7 +422,7 @@ class WebFoundationTests(unittest.TestCase):
     def test_api_app_imports_without_initialising_rag(self):
         from project_assistant.api.app import app
 
-        self.assertEqual(app.version, "0.7.2")
+        self.assertEqual(app.version, "0.7.3")
 
     def test_portkey_url_is_explicit_and_does_not_default_public(self):
         from project_assistant.config import PortkeySettings

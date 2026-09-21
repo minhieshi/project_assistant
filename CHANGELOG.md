@@ -1,3 +1,12 @@
+## 0.7.3 — Streamlined approval checklist
+
+- Added selectable plan-action checkboxes with a single **Approve selected actions** button.
+- Persisted the exact approved plan scope in proposal JSON and conversation Markdown.
+- Added an explicit exact-diff approval checklist covering diff review, target repo and bound SHA/base commit.
+- Persisted diff approval confirmations in the proposal ledger.
+- Added a final apply confirmation checkbox before mutating the working tree.
+- Kept the existing two-stage plan/diff approval boundary intact; unseen diffs cannot be pre-approved.
+
 ## 0.7.2 — macOS Dictation simplification
 
 - Removed the `whisper.cpp` backend, microphone recording endpoint, WAV encoder, model-path environment variables, and Whisper status plumbing.

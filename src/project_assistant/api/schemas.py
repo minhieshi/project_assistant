@@ -50,3 +50,11 @@ class QueryRequest(BaseModel):
 class StagePatchRequest(BaseModel):
     patch_path: str
     repo_path: str
+
+
+class PlanApprovalRequest(BaseModel):
+    approved_actions: list[str] = Field(default_factory=list, max_length=50)
+
+
+class PatchApprovalRequest(BaseModel):
+    approval_checks: list[str] = Field(default_factory=list, max_length=20)

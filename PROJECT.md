@@ -103,3 +103,8 @@ Semantic/vector retrieval and the retrieval-planner pass are fail-soft. Portkey/
 ## v0.7.2 — Native macOS Dictation
 
 Removed Project Assistant's `whisper.cpp` integration. Dictation is now an operating-system input feature only: macOS inserts dictated text directly into the chat textarea, which the user can review before sending. Project Assistant no longer requests microphone access or handles speech audio.
+
+
+## v0.7.3 — Streamlined approvals
+
+The web UI now presents approval scopes as checklists. Plan approval persists only the selected actions; the exact staged diff remains separately approved and cryptographically bound before application.

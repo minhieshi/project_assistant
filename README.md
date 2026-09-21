@@ -1,4 +1,8 @@
-# Local Project Assistant — v0.7.2
+# Local Project Assistant — v0.7.3
+
+### Approval workflow
+
+Change proposals now expose an explicit approval checklist in the web UI. Select the plan actions you approve and use **Approve selected actions**. The selected scope is recorded in the proposal and conversation ledger. After a candidate diff is staged, the exact diff still requires a separate checklist approval bound to its repository, base commit and SHA-256; applying it requires one final confirmation.
 
 A local-first engineering workbench for source-heavy enterprise work: persistent Markdown conversations, multi-repo RAG, deterministic knowledge graph, context compilation and two-stage approval-gated code changes.
 
