@@ -623,3 +623,13 @@ class ChatRouteTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+
+def test_non_git_directory_skip_policy():
+    from project_assistant.index_policy import should_skip_dir
+
+    for name in ("node_modules", "build", ".git", "__pycache__", ".venv", "target"):
+        assert should_skip_dir(name)
+    for name in ("src", "docs", "roles", "playbooks"):
+        assert not should_skip_dir(name)

@@ -1,6 +1,6 @@
 [project]
 name = "local-project-assistant"
-version = "0.6.7.1"
+version = "0.6.7.2"
 description = "Local-first project assistant with authenticated Next.js/FastAPI UI, egress controls, incremental RAG, knowledge graph and two-stage approval-gated changes and persistent Git-backed project discovery"
 requires-python = ">=3.11"
 dependencies = [

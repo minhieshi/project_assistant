@@ -1,3 +1,10 @@
+## v0.6.7.2
+
+- Fixed `NameError: SKIP_DIRS is not defined` in the non-Git filesystem walker introduced by v0.6.7.
+- Centralised skipped-directory policy in `index_policy.py`.
+- Added regression coverage for non-Git source walking so build/cache directories remain excluded.
+- Clean-install validation now imports the package and starts the FastAPI app before release packaging.
+
 # 0.6.7.1
 
 - Fix packaging/install issue that could leave `project_assistant.index_status` unavailable at runtime.

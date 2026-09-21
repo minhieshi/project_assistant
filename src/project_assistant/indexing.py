@@ -17,7 +17,7 @@ from .code_chunking import CodeChunker
 from .config import ProjectConfig, SourceRoot
 from .knowledge_graph import KnowledgeGraph
 from .index_status import IndexStatusStore
-from .index_policy import FileEligibilityPolicy
+from .index_policy import FileEligibilityPolicy, should_skip_dir
 from .lexical_index import LexicalHit, LexicalIndex
 from .repo_catalog import RepositoryCatalog
 from .security import EgressPolicy, private_file, path_is_within
@@ -232,7 +232,7 @@ class IncrementalIndexer:
                 yield from git_files
                 return
         for current_root, dirs, files in os.walk(root):
-            dirs[:] = [d for d in dirs if d not in SKIP_DIRS]
+            dirs[:] = [d for d in dirs if not should_skip_dir(d)]
             for filename in files:
                 unresolved = Path(current_root) / filename
                 try:

@@ -18,6 +18,17 @@ MAX_PDF_FILE_BYTES = 50 * 1024 * 1024
 GENERATED_LARGE_BYTES = 200 * 1024
 MINIFIED_LINE_CHARS = 20_000
 
+# Directories that are never useful as project knowledge when walking a
+# non-Git source. Git-backed sources use ``git ls-files`` instead.
+SKIP_DIRS = {
+    ".git", ".venv", "venv", "node_modules", "dist", "build", "target",
+    ".next", ".idea", ".vscode", "chroma", "__pycache__",
+}
+
+
+def should_skip_dir(name: str) -> bool:
+    return name in SKIP_DIRS
+
 
 class FileEligibilityPolicy:
     """Classifies source files before local parsing or remote embedding.
