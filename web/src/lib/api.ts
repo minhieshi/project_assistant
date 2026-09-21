@@ -56,22 +56,6 @@ export const api = {
 };
 
 
-export async function transcribeLocalWav(audio: Blob): Promise<string> {
-  const response = await fetch(`${API_BASE}/dictate`, {
-    method: "POST",
-    headers: { "Content-Type": "audio/wav" },
-    body: audio,
-    cache: "no-store",
-  });
-  if (!response.ok) {
-    let detail = `Dictation failed: ${response.status} ${response.statusText}`;
-    try { const body = await response.json(); detail = body.detail ?? detail; } catch {}
-    throw new Error(detail);
-  }
-  const payload = await response.json() as { text?: string };
-  if (!payload.text?.trim()) throw new Error("Local dictation returned an empty transcript");
-  return payload.text.trim();
-}
 
 export type StreamCallbacks = {
   onContext?: (context: ContextSummary) => void;

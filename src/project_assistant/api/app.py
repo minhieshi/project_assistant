@@ -15,7 +15,6 @@ from ..config import ProjectConfig, SourceRoot
 from ..conversations import ConversationStore
 from ..knowledge_graph import KnowledgeGraph
 from ..index_status import IndexStatusStore
-from ..dictation import dictation_status, transcribe_wav
 from ..security import load_or_create_api_token, tokens_equal, validate_source_root
 from .dependencies import assistant_for, invalidate, project_path, registry
 from .schemas import (
@@ -34,7 +33,7 @@ from .schemas import (
 
 
 API_TOKEN = load_or_create_api_token()
-app = FastAPI(title="Local Project Assistant", version="0.7.1")
+app = FastAPI(title="Local Project Assistant", version="0.7.2")
 app.add_middleware(TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost", "testserver"])
 
 
@@ -103,7 +102,7 @@ def _sse(event: str, payload: dict | str) -> str:
 
 @app.get("/health")
 def health() -> dict:
-    return {"status": "ok", "version": "0.7.1"}
+    return {"status": "ok", "version": "0.7.2"}
 
 
 @app.get("/api/status")
@@ -113,7 +112,7 @@ def status() -> dict:
 
     settings = PortkeySettings.from_env()
     return {
-        "version": "0.7.1",
+        "version": "0.7.2",
         "projects_root": str(registry.projects_root),
         "portkey": {
             "base_url": settings.base_url,
@@ -124,21 +123,8 @@ def status() -> dict:
             "reasoning_effort": settings.reasoning_effort,
             "embedding_model_configured": bool(settings.embedding_model),
         },
-        "dictation": dictation_status().to_dict(),
     }
 
-
-@app.post("/api/dictate")
-async def dictate(request: Request) -> dict:
-    try:
-        content_type = (request.headers.get("content-type") or "").split(";", 1)[0].strip().lower()
-        if content_type not in {"audio/wav", "audio/x-wav", "application/octet-stream"}:
-            raise ValueError("Dictation expects Content-Type: audio/wav")
-        audio = await request.body()
-        text = await asyncio.to_thread(transcribe_wav, audio)
-        return {"text": text}
-    except Exception as exc:
-        raise _error(exc)
 
 
 @app.get("/api/projects")

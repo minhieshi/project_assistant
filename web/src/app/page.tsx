@@ -1,8 +1,7 @@
 "use client";
 
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { api, streamChat, transcribeLocalWav } from "@/lib/api";
-import { startLocalWavRecording, type LocalWavRecorder } from "@/lib/dictation";
+import { api, streamChat } from "@/lib/api";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type {
@@ -36,8 +35,6 @@ export default function Home() {
   const [message, setMessage] = useState("");
   const [mode, setMode] = useState<"chat" | "propose">("chat");
   const [streamingText, setStreamingText] = useState("");
-  const [recording, setRecording] = useState(false);
-  const [transcribing, setTranscribing] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [importPath, setImportPath] = useState("");
@@ -51,7 +48,6 @@ export default function Home() {
   const [convertSourceName, setConvertSourceName] = useState("");
   const [contextQuery, setContextQuery] = useState("");
   const bottomRef = useRef<HTMLDivElement>(null);
-  const recorderRef = useRef<LocalWavRecorder | null>(null);
 
   const currentProject = useMemo(() => projects.find((project) => project.id === projectId) ?? null, [projects, projectId]);
 
@@ -110,17 +106,6 @@ export default function Home() {
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [conversation?.entries.length, streamingText]);
-
-  useEffect(() => () => {
-    if (recorderRef.current) void recorderRef.current.cancel();
-  }, []);
-
-  useEffect(() => {
-    if (!recorderRef.current) return;
-    void recorderRef.current.cancel();
-    recorderRef.current = null;
-    setRecording(false);
-  }, [projectId, conversationId]);
 
   async function createProject(event: FormEvent) {
     event.preventDefault();
@@ -185,34 +170,6 @@ export default function Home() {
     } finally { setBusy(false); }
   }
 
-  async function toggleDictation() {
-    if (transcribing || busy) return;
-    setError("");
-    try {
-      if (recording && recorderRef.current) {
-        setRecording(false);
-        setTranscribing(true);
-        const recorder = recorderRef.current;
-        recorderRef.current = null;
-        const wav = await recorder.stop();
-        const transcript = await transcribeLocalWav(wav);
-        setMessage((current) => current.trim() ? `${current.trim()} ${transcript}` : transcript);
-        return;
-      }
-
-      if (!appStatus?.dictation.configured) {
-        throw new Error(appStatus?.dictation.detail || "Local dictation is not configured");
-      }
-      recorderRef.current = await startLocalWavRecording();
-      setRecording(true);
-    } catch (e) {
-      recorderRef.current = null;
-      setRecording(false);
-      setError(String(e));
-    } finally {
-      setTranscribing(false);
-    }
-  }
 
   async function addSource(event: FormEvent) {
     event.preventDefault();
@@ -313,8 +270,8 @@ export default function Home() {
   return (
     <div className="app-shell">
       <aside className="sidebar">
-        <div className="brand">Project Assistant <span className="small">v0.7.0</span></div>
-        {appStatus && <div className="notice" style={{ marginBottom: 12 }}>Projects: {appStatus.projects_root}<br />Portkey: {appStatus.portkey.base_url_configured ? "URL configured" : "URL missing"}<br />Dictation: {appStatus.dictation.configured ? "local Whisper ready" : "not configured"}</div>}
+        <div className="brand">Project Assistant <span className="small">v0.7.2</span></div>
+        {appStatus && <div className="notice" style={{ marginBottom: 12 }}>Projects: {appStatus.projects_root}<br />Portkey: {appStatus.portkey.base_url_configured ? "URL configured" : "URL missing"}</div>}
 
         <div className="section-title">Projects</div>
         {projects.map((project) => (
@@ -381,17 +338,9 @@ export default function Home() {
                       <button className={mode === "chat" ? "active" : ""} onClick={() => setMode("chat")}>Chat</button>
                       <button className={mode === "propose" ? "active" : ""} onClick={() => setMode("propose")}>Propose change</button>
                     </div>
-                    <button
-                      className={`btn dictate ${recording ? "recording" : ""}`}
-                      type="button"
-                      onClick={() => void toggleDictation()}
-                      disabled={busy || transcribing}
-                      title={appStatus?.dictation.configured ? "Local-only dictation via whisper.cpp" : appStatus?.dictation.detail || "Local dictation is not configured"}
-                    >
-                      {transcribing ? "Transcribing…" : recording ? "Stop dictation" : "Dictate"}
-                    </button>
                   </div>
-                  <button className="btn primary" onClick={() => void send()} disabled={busy || recording || transcribing || !message.trim()}>{busy ? "Working…" : mode === "propose" ? "Write proposal" : "Send"}</button>
+                  <button className="btn primary" onClick={() => void send()} disabled={busy || !message.trim()}>{busy ? "Working…" : mode === "propose" ? "Write proposal" : "Send"}</button>
+                  <span className="small">Tip: macOS Dictation works directly in the message box using your configured Dictation shortcut.</span>
                 </div>
               </div>
             </div>}

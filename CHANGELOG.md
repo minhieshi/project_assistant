@@ -1,3 +1,10 @@
+## 0.7.2 — macOS Dictation simplification
+
+- Removed the `whisper.cpp` backend, microphone recording endpoint, WAV encoder, model-path environment variables, and Whisper status plumbing.
+- Project Assistant now relies on native macOS Dictation directly in the chat textarea.
+- No speech audio is captured, stored, or transmitted by Project Assistant.
+- Added a small UI hint pointing users to their configured macOS Dictation shortcut.
+
 ## 0.7.1 — Retrieval fail-soft hotfix
 
 - Semantic embedding failures during chat/context compilation no longer abort the request.

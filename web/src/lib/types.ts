@@ -76,14 +76,6 @@ export type AppStatus = {
     chat_model: string;
     embedding_model_configured: boolean;
   };
-  dictation: {
-    configured: boolean;
-    backend: string;
-    binary?: string | null;
-    model?: string | null;
-    language: string;
-    detail?: string | null;
-  };
 };
 
 export type RepoIndexStats = {

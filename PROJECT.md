@@ -98,3 +98,8 @@ Retrieval is now iterative and conversation-aware. GPT may plan additional read-
 
 ## v0.7.1 hotfix
 Semantic/vector retrieval and the retrieval-planner pass are fail-soft. Portkey/Bedrock embedding failures no longer abort chat; local FTS/exact/knowledge-graph retrieval continues, semantic queries are bounded, and gateway HTML errors are sanitised.
+
+
+## v0.7.2 — Native macOS Dictation
+
+Removed Project Assistant's `whisper.cpp` integration. Dictation is now an operating-system input feature only: macOS inserts dictated text directly into the chat textarea, which the user can review before sending. Project Assistant no longer requests microphone access or handles speech audio.

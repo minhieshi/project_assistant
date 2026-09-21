@@ -1,4 +1,4 @@
-# Local Project Assistant — v0.7.0
+# Local Project Assistant — v0.7.2
 
 A local-first engineering workbench for source-heavy enterprise work: persistent Markdown conversations, multi-repo RAG, deterministic knowledge graph, context compilation and two-stage approval-gated code changes.
 
@@ -194,7 +194,6 @@ Code chunks retain repo/path/language/symbol/line metadata. Git-backed repos use
 - npm
 - Git
 - an enterprise-approved Portkey route exposing GPT-5.6 and an embedding model
-- optional for in-app dictation: a local `whisper.cpp` `whisper-cli` executable plus a local GGML Whisper model file
 
 ## Install
 
@@ -266,60 +265,11 @@ The latest run is persisted to `.assistant/index_status.json` and shown in **Pro
 
 Assistant responses are rendered as GitHub-flavoured Markdown in the web UI. Fenced blocks such as ` ```sh ` / ` ```bash ` render as real code blocks rather than plain wrapped text. The renderer uses `react-markdown` + `remark-gfm`; raw HTML is not enabled. After upgrading from an earlier build, run `npm install` once so the two frontend dependencies are installed.
 
-### Optional local dictation
+### macOS Dictation
 
-Dictation is deliberately local-only. The browser captures microphone samples and encodes a mono 16 kHz PCM WAV locally; the WAV is proxied to the loopback FastAPI service and passed to a locally installed `whisper.cpp` CLI. The transcript is inserted into the composer **but is not sent automatically**, so it can be reviewed/edited first. Temporary audio/transcript files are deleted after each transcription.
+Project Assistant no longer records or transcribes microphone audio itself. Dictation is handled by macOS directly in the chat textarea. Enable it under **System Settings → Keyboard → Dictation**, place the cursor in the message box, then use the Mac's configured Dictation shortcut (for example the microphone key or `Fn-D`, depending on your Mac/settings). Review the text before sending as normal.
 
-Configure a local executable and model before starting the API:
-
-```bash
-export PROJECT_ASSISTANT_WHISPER_BIN='/absolute/path/to/whisper-cli'
-export PROJECT_ASSISTANT_WHISPER_MODEL='/absolute/path/to/ggml-base.en.bin'
-export PROJECT_ASSISTANT_WHISPER_LANGUAGE='en'
-```
-
-If `whisper-cli` is already on `PATH`, `PROJECT_ASSISTANT_WHISPER_BIN` can be omitted. Project Assistant does not download a Whisper model and does not call a browser/cloud speech-recognition service. The UI status shows `Dictation: local Whisper ready` when both the binary and model are available.
-
-Frontend:
-
-```bash
-cd web
-npm install
-```
-
-Do **not** put Portkey credentials in `web/.env.local`. The frontend server only needs access to the local FastAPI service and local assistant token.
-
-## Run
-
-Easiest after dependencies are installed:
-
-```bash
-./scripts/dev.sh
-```
-
-Or separately:
-
-```bash
-# terminal 1
-source .venv/bin/activate
-project-assistant-api
-
-# terminal 2
-cd web
-npm run dev
-```
-
-Open:
-
-```text
-http://127.0.0.1:3000
-```
-
-FastAPI binds to `127.0.0.1:8000` by default.
-
-## Projects and persistence
-
-The app now has two explicit project flows.
+On managed Macs, whether Dictation is available and whether processing is forced on-device is controlled by macOS and your organisation's device-management policy. Project Assistant itself requires no Apple/iCloud account. In **System Settings → Keyboard → Dictation**, macOS shows whether general Dictation voice input/transcripts are processed on-device or sent to Siri servers; check that text before using Dictation with work material.
 
 ### Create project
 

@@ -398,7 +398,7 @@ class WebFoundationTests(unittest.TestCase):
     def test_api_app_imports_without_initialising_rag(self):
         from project_assistant.api.app import app
 
-        self.assertEqual(app.version, "0.7.1")
+        self.assertEqual(app.version, "0.7.2")
 
     def test_portkey_url_is_explicit_and_does_not_default_public(self):
         from project_assistant.config import PortkeySettings
@@ -692,42 +692,6 @@ class DictationTests(unittest.TestCase):
             + b"data" + struct.pack("<I", len(data)) + data
         )
 
-    def test_dictation_requires_local_binary_and_model(self):
-        from project_assistant.dictation import dictation_status
-        with patch.dict(os.environ, {
-            "PROJECT_ASSISTANT_WHISPER_BIN": "/definitely/missing/whisper-cli",
-            "PROJECT_ASSISTANT_WHISPER_MODEL": "/definitely/missing/model.bin",
-        }, clear=False):
-            status = dictation_status()
-            self.assertFalse(status.configured)
-
-    def test_local_dictation_uses_temp_wav_and_reads_text_output(self):
-        from types import SimpleNamespace
-        from project_assistant.dictation import transcribe_wav
-
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            binary = root / "whisper-cli"
-            model = root / "ggml-base.en.bin"
-            binary.write_text("stub", encoding="utf-8")
-            model.write_bytes(b"model")
-
-            def fake_run(command, **kwargs):
-                output_base = Path(command[command.index("-of") + 1])
-                output_base.with_suffix(".txt").write_text("hello from local whisper\n", encoding="utf-8")
-                self.assertEqual(Path(command[command.index("-m") + 1]), model.resolve())
-                self.assertEqual(Path(command[command.index("-f") + 1]).suffix, ".wav")
-                return SimpleNamespace(returncode=0, stdout="", stderr="")
-
-            with patch.dict(os.environ, {
-                "PROJECT_ASSISTANT_WHISPER_BIN": str(binary),
-                "PROJECT_ASSISTANT_WHISPER_MODEL": str(model),
-                "PROJECT_ASSISTANT_WHISPER_LANGUAGE": "en",
-            }, clear=False), patch("project_assistant.dictation.subprocess.run", side_effect=fake_run):
-                self.assertEqual(transcribe_wav(self._wav()), "hello from local whisper")
-
-
-class RetrievalV2Tests(unittest.TestCase):
     def test_context_queries_include_previous_user_turn_and_error_focus(self):
         from project_assistant.config import ProjectConfig
         from project_assistant.context_compiler import ContextCompiler

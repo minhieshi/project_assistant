@@ -97,5 +97,3 @@ select.input { appearance: auto; }
 .markdown a { color: #bfc9ff; text-decoration: underline; text-underline-offset: 2px; }
 .markdown hr { border: 0; border-top: 1px solid var(--line); margin: 20px 0; }
 
-.btn.dictate { min-width: 84px; }
-.btn.dictate.recording { border-color: #b86161; color: #ffd1d1; background: #351b1f; }
