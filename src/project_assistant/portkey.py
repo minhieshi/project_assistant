@@ -16,12 +16,13 @@ class StreamingChatModel(Protocol):
 
 
 class PortkeyEmbeddings:
-    """LangChain-compatible embeddings backed by Portkey's official Python SDK.
+    """Minimal Portkey SDK embedding adapter.
 
-    Provider-prefixed model IDs (for example ``@bedrock-au/amazon...``) are
-    split into the SDK's ``provider`` argument plus the provider-native model
-    name. This mirrors Portkey's provider integration examples and leaves the
-    provider-specific request translation to Portkey.
+    This intentionally mirrors the enterprise Portkey example exactly:
+    construct ``Portkey`` with the API key, then call
+    ``client.completion.create(model=<full model id>, input=<raw text>)``.
+
+    Do not split provider/model identifiers or add provider-specific fields.
     """
 
     def __init__(
@@ -33,75 +34,73 @@ class PortkeyEmbeddings:
         self.settings = settings
         self.policy = policy or EgressPolicy()
         self.client_override = client_override
-        self.provider, self.native_model = _split_portkey_model(settings.embedding_model)
 
     def _client(self):
         if self.client_override is not None:
             return self.client_override
-        if self.settings.extra_headers:
-            raise RuntimeError(
-                "PORTKEY_EXTRA_HEADERS_JSON is not supported by the Portkey SDK embedding "
-                "adapter. Use PORTKEY_API_KEY / PORTKEY_EMBEDDING_VIRTUAL_KEY / "
-                "PORTKEY_EMBEDDING_CONFIG_ID, or add an explicit supported SDK option."
-            )
 
         from portkey_ai import Portkey
 
+        # Keep this deliberately minimal. The API key comes only from the
+        # environment-backed PortkeySettings. The enterprise base URL is
+        # supplied only when configured; the embedding request itself is
+        # exactly model + input.
         kwargs: dict[str, object] = {
-            "api_key": self.settings.api_key or None,
-            "base_url": self.settings.base_url or None,
+            "api_key": self.settings.api_key,
         }
-        if self.provider:
-            kwargs["provider"] = self.provider
-        if self.settings.embedding_virtual_key:
-            kwargs["virtual_key"] = self.settings.embedding_virtual_key
-        if self.settings.embedding_config_id:
-            kwargs["config"] = self.settings.embedding_config_id
+        if self.settings.base_url:
+            kwargs["base_url"] = self.settings.base_url
         return Portkey(**kwargs)
 
-    def _embed_one(self, text: str, *, label: str, query: bool) -> list[float]:
+    @staticmethod
+    def _extract_embedding(response: object) -> list[float]:
+        # Support the common OpenAI-style Portkey response plus a couple of
+        # direct SDK response shapes without altering the request.
+        data = getattr(response, "data", None)
+        if data:
+            first = data[0]
+            embedding = getattr(first, "embedding", None)
+            if embedding is None and isinstance(first, dict):
+                embedding = first.get("embedding")
+            if isinstance(embedding, (list, tuple)):
+                return [float(value) for value in embedding]
+
+        embedding = getattr(response, "embedding", None)
+        if isinstance(embedding, (list, tuple)):
+            return [float(value) for value in embedding]
+        if isinstance(response, dict):
+            direct = response.get("embedding")
+            if isinstance(direct, (list, tuple)):
+                return [float(value) for value in direct]
+            raw_data = response.get("data")
+            if isinstance(raw_data, list) and raw_data:
+                first = raw_data[0]
+                if isinstance(first, dict) and isinstance(first.get("embedding"), (list, tuple)):
+                    return [float(value) for value in first["embedding"]]
+
+        raise RuntimeError("Portkey embedding response contained no vector")
+
+    def _embed_one(self, text: str, *, label: str) -> list[float]:
         self.policy.assert_text_safe(text, label=label)
         if not text or not text.strip():
             raise ValueError("Embedding input must not be empty")
 
-        request: dict[str, object] = {
-            "model": self.native_model,
-            "input": text,
-        }
-        # Cohere v3 embeddings require a purpose. Titan and OpenAI-style
-        # embedding routes need only model + input.
-        if "cohere.embed" in self.native_model.lower():
-            request["input_type"] = "search_query" if query else "search_document"
-
-        response = self._client().embeddings.create(**request)
-        data = getattr(response, "data", None)
-        if data:
-            embedding = getattr(data[0], "embedding", None)
-            if isinstance(embedding, list):
-                return [float(value) for value in embedding]
-        raise RuntimeError("Portkey embedding response contained no vector")
+        response = self._client().completion.create(
+            model=self.settings.embedding_model,
+            input=text,
+        )
+        return self._extract_embedding(response)
 
     def embed_documents(self, texts: list[str]) -> list[list[float]]:
-        # Keep one raw string per request until the enterprise route is proven
-        # to support batching. Incremental indexing limits repeat work.
-        return [self._embed_one(text, label="embedding input", query=False) for text in texts]
+        return [self._embed_one(text, label="embedding input") for text in texts]
 
     def embed_query(self, text: str) -> list[float]:
-        return self._embed_one(text, label="embedding query", query=True)
+        return self._embed_one(text, label="embedding query")
 
 
 # Backwards-compatible name retained for tests/imports from v0.6.1/0.6.2.
 PortkeyTitanEmbeddings = PortkeyEmbeddings
 
-
-def _split_portkey_model(model: str) -> tuple[str | None, str]:
-    """Split @provider/model into the provider slug and provider-native model name."""
-    value = model.strip()
-    if value.startswith("@") and "/" in value:
-        provider, native_model = value.split("/", 1)
-        if provider and native_model:
-            return provider, native_model
-    return None, value
 
 
 def get_embedding_function(settings: PortkeySettings):

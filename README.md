@@ -1,4 +1,4 @@
-# Local Project Assistant — v0.6.3
+# Local Project Assistant — v0.6.4
 
 A local-first engineering workbench for source-heavy enterprise work: persistent Markdown conversations, multi-repo RAG, deterministic knowledge graph, context compilation and two-stage approval-gated code changes.
 
@@ -161,7 +161,7 @@ Code chunks retain repo/path/language/symbol/line metadata. Git-backed repos use
 Backend:
 
 ```bash
-cd project-assistant-v0.6.3
+cd project-assistant-v0.6.4
 python -m venv .venv
 source .venv/bin/activate
 pip install -e .
@@ -188,7 +188,7 @@ export PORTKEY_EXTRA_HEADERS_JSON='{}'
 
 ### Titan Text Embeddings V2 through Portkey
 
-For `@bedrock-au/amazon.titan-embed-text-v2:0`, v0.6.3 now follows Portkey's documented Python SDK path. The configured value is split into `provider="@bedrock-au"` and `model="amazon.titan-embed-text-v2:0"`, then each changed chunk is sent as one raw string through `portkey.embeddings.create(model=..., input=...)`. Project Assistant no longer constructs a Bedrock payload or adds embedding inference fields itself.
+For embeddings, v0.6.4 deliberately mirrors the enterprise Portkey example with no provider-specific translation in Project Assistant. The configured model string is passed unchanged and each chunk is sent as one raw string through `portkey.completion.create(model=..., input=...)`. For example, `@bedrock-au/amazon.titan-embed-text-v2:0` is passed exactly as configured. No `provider`, `encoding_format`, `input_type`, or Bedrock-native fields are added by Project Assistant.
 
 Before indexing a repository, test the route with a fixed non-sensitive string:
 
@@ -374,7 +374,7 @@ A newly created managed project is its own local Git repo:
 PYTHONPATH=src python -m unittest discover -s tests -v
 ```
 
-v0.6.3 currently has 29 backend/core tests covering the two-stage approval gate, patch tampering, HEAD changes, secret detection, path traversal, API authentication, retrieval and graph behaviour.
+v0.6.4 currently has 29 backend/core tests covering the two-stage approval gate, patch tampering, HEAD changes, secret detection, path traversal, API authentication, retrieval and graph behaviour.
 
 After `npm install`:
 

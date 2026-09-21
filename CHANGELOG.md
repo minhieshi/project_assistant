@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.6.4
+
+- Simplified embeddings to match the enterprise Portkey example exactly: `Portkey(...).completion.create(model=<full configured model>, input=<raw text>)`.
+- The full model ID (for example `@bedrock-au/amazon.titan-embed-text-v2:0`) is passed unchanged.
+- Removed provider/model splitting, `embeddings.create`, `encoding_format`, `input_type`, provider arguments, and embedding-specific config/virtual-key injection from the embedding path.
+- The real Portkey API key remains environment-backed; it is never hard-coded into the source.
+- Added regression tests for the exact minimal call shape.
+
 ## v0.6.3
 
 - Switched embeddings to Portkey's official Python SDK (`from portkey_ai import Portkey`).

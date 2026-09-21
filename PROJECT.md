@@ -70,3 +70,8 @@ The configured enterprise embedding route is `@bedrock-au/amazon.titan-embed-tex
 - Real Portkey credentials remain environment-backed and are supplied to the SDK at runtime.
 - Chat reasoning defaults to the enterprise-supported `high` ceiling for both Chat Completions and Responses modes.
 - `embedding-test` and `chat-test` provide small, non-sensitive route validation before indexing or normal conversation use.
+
+## v0.6.4 embedding simplification
+
+- Embeddings now use the exact enterprise Portkey SDK call shape: `Portkey(...).completion.create(model=<full model id>, input=<raw text>)`.
+- No model/provider splitting or embedding-specific request fields are applied.
