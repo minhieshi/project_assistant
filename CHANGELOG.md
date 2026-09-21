@@ -1,16 +1,15 @@
 # Changelog
 
-## v0.6.2
+## v0.6.3
 
-- Replaced the Titan embedding OpenAI SDK call with direct HTTP to `${PORTKEY_BASE_URL}/embeddings`.
-- Titan requests now serialise exactly `model`, one raw string `input`, and `encoding_format: "float"`; no SDK can inject `base64` or token-array defaults.
-- Added transport-level regression coverage that inspects the actual JSON bytes passed to the HTTP layer.
-- Clarified that OpenAI SDK `api_key` placeholders are dummy constructor values only; real Portkey auth remains in environment-backed `x-portkey-*` headers.
-- Added `PORTKEY_REASONING_EFFORT`, defaulting to and capped at `high` for this enterprise route.
-- Chat Completions sends `reasoning_effort=high`; Responses sends `reasoning={"effort":"high"}`.
-- Added `project-assistant chat-test` covering non-streaming and streaming chat connectivity.
-- Added chat request-shape regression tests for both API modes.
-- Backend/core suite: 29 passing tests.
+- Switched embeddings to Portkey's official Python SDK (`from portkey_ai import Portkey`).
+- Provider-prefixed embedding routes are split so `@bedrock-au/amazon.titan-embed-text-v2:0` becomes SDK provider `@bedrock-au` plus model `amazon.titan-embed-text-v2:0`.
+- Titan embeddings now call `portkey.embeddings.create(model=..., input=...)` with one raw string and no application-added Bedrock inference fields.
+- Switched chat to the Portkey Python SDK as well, removing the dummy OpenAI SDK API-key placeholder from the inference path.
+- Preserved separate chat/embedding virtual-key and config-ID support plus explicit enterprise `PORTKEY_BASE_URL`.
+- Added Portkey SDK/provider-splitting regression coverage, including Cohere query/document input types.
+- `PORTKEY_REASONING_EFFORT` remains defaulted/capped to `high`; `chat-test` still checks streaming and non-streaming routes.
+- Backend/core suite: 30 passing tests.
 
 ## v0.6.1
 

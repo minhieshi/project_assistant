@@ -1,4 +1,4 @@
-# Local Project Assistant — v0.6.2
+# Local Project Assistant — v0.6.3
 
 A local-first engineering workbench for source-heavy enterprise work: persistent Markdown conversations, multi-repo RAG, deterministic knowledge graph, context compilation and two-stage approval-gated code changes.
 
@@ -161,7 +161,7 @@ Code chunks retain repo/path/language/symbol/line metadata. Git-backed repos use
 Backend:
 
 ```bash
-cd project-assistant-v0.6.2
+cd project-assistant-v0.6.3
 python -m venv .venv
 source .venv/bin/activate
 pip install -e .
@@ -188,7 +188,7 @@ export PORTKEY_EXTRA_HEADERS_JSON='{}'
 
 ### Titan Text Embeddings V2 through Portkey
 
-For `@bedrock-au/amazon.titan-embed-text-v2:0`, v0.6.2 uses a provider-specific **direct HTTP** adapter rather than LangChain/OpenAI SDK embeddings. Each changed chunk is sent as exactly one raw string to `${PORTKEY_BASE_URL}/embeddings` with `encoding_format: "float"`. No SDK can inject token arrays, batching, `base64`, or other hidden fields. `dimensions` and `normalize` remain unset, so Titan V2 uses its Bedrock defaults (1024 dimensions and normalisation enabled).
+For `@bedrock-au/amazon.titan-embed-text-v2:0`, v0.6.3 now follows Portkey's documented Python SDK path. The configured value is split into `provider="@bedrock-au"` and `model="amazon.titan-embed-text-v2:0"`, then each changed chunk is sent as one raw string through `portkey.embeddings.create(model=..., input=...)`. Project Assistant no longer constructs a Bedrock payload or adds embedding inference fields itself.
 
 Before indexing a repository, test the route with a fixed non-sensitive string:
 
@@ -206,7 +206,7 @@ The enterprise chat route is treated as an opaque Portkey model identifier and i
 project-assistant chat-test
 ```
 
-The OpenAI SDK constructor still receives a clearly named dummy credential for chat/generic embedding clients because real Portkey authentication is supplied only through `x-portkey-*` headers from environment-backed settings. Never hard-code the real Portkey key in source.
+Both embeddings and chat now use Portkey's Python SDK directly. `PORTKEY_API_KEY` remains environment-backed and is passed to the SDK at runtime; there is no hard-coded or placeholder Portkey credential in the inference path.
 
 A healthy Titan V2 route should print approximately:
 
@@ -374,7 +374,7 @@ A newly created managed project is its own local Git repo:
 PYTHONPATH=src python -m unittest discover -s tests -v
 ```
 
-v0.6.2 currently has 29 backend/core tests covering the two-stage approval gate, patch tampering, HEAD changes, secret detection, path traversal, API authentication, retrieval and graph behaviour.
+v0.6.3 currently has 29 backend/core tests covering the two-stage approval gate, patch tampering, HEAD changes, secret detection, path traversal, API authentication, retrieval and graph behaviour.
 
 After `npm install`:
 
