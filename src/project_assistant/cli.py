@@ -57,26 +57,9 @@ def main() -> None:
     p_chat.add_argument("conversation_id")
     p_chat.add_argument("message")
 
-    p_propose = sub.add_parser("propose")
-    p_propose.add_argument("conversation_id")
-    p_propose.add_argument("request")
-
-    p_approve = sub.add_parser("approve")
-    p_approve.add_argument("proposal_id")
-
-    p_reject = sub.add_parser("reject")
-    p_reject.add_argument("proposal_id")
-
-    p_stage = sub.add_parser("stage-patch")
-    p_stage.add_argument("proposal_id")
-    p_stage.add_argument("patch")
-    p_stage.add_argument("--repo", required=True)
-
-    p_approve_patch = sub.add_parser("approve-patch")
-    p_approve_patch.add_argument("proposal_id")
-
-    p_apply = sub.add_parser("apply-patch")
-    p_apply.add_argument("proposal_id")
+    p_handoff = sub.add_parser("handoff", help="Prepare a read-only OpenCode implementation brief")
+    p_handoff.add_argument("conversation_id")
+    p_handoff.add_argument("--focus", default="")
 
     p_search = sub.add_parser("search")
     p_search.add_argument("query")
@@ -182,25 +165,10 @@ def main() -> None:
         print(conv.path)
     elif args.command == "chat":
         print(assistant.answer(args.conversation_id, args.message))
-    elif args.command == "propose":
-        proposal = assistant.propose_change(args.conversation_id, args.request)
-        print(proposal.id)
-        print("PENDING PLAN APPROVAL")
-    elif args.command == "approve":
-        proposal = assistant.approve(args.proposal_id)
-        print(f"{proposal.id}: {proposal.status}")
-    elif args.command == "reject":
-        proposal = assistant.reject(args.proposal_id)
-        print(f"{proposal.id}: {proposal.status}")
-    elif args.command == "stage-patch":
-        proposal = assistant.gate.stage_patch(args.proposal_id, Path(args.patch), Path(args.repo))
-        print(f"{proposal.id}: {proposal.status} sha256={proposal.patch_sha256}")
-    elif args.command == "approve-patch":
-        proposal = assistant.gate.approve_patch(args.proposal_id)
-        print(f"{proposal.id}: {proposal.status}")
-    elif args.command == "apply-patch":
-        proposal = assistant.gate.apply_patch(args.proposal_id)
-        print(f"{proposal.id}: {proposal.status}")
+    elif args.command == "handoff":
+        brief, compiled, debug_path = assistant.prepare_implementation_brief(args.conversation_id, args.focus)
+        print(brief)
+        print(f"\n[context snapshot: {debug_path}]", flush=True)
     elif args.command == "search":
         for hit in assistant.indexer.search(args.query):
             line = ""

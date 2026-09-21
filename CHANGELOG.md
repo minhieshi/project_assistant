@@ -1,3 +1,16 @@
+# v0.7.9
+
+## 0.7.9 — Read-only project intelligence + OpenCode handoff
+
+- Pivots Project Assistant away from source mutation and into read-only project intelligence.
+- Removes proposal approval, patch staging, exact-diff approval and apply routes from the public API/UI.
+- Adds **OpenCode brief** mode in the composer. It can use the current conversation as the focus or accept an optional handoff focus.
+- Adds multi-round handoff retrieval that locates concrete repositories, relative paths, symbols, integration boundaries, configuration and tests, with live reads where possible.
+- Generates a structured, source-grounded implementation brief and stores it in the conversation Markdown.
+- Adds **Copy for OpenCode** directly on generated implementation briefs.
+- Keeps project/source registration, indexing, RAG, graph retrieval, live read-only filesystem/Git inspection, context inspection and chat unchanged.
+- Source repositories are not modified by Project Assistant; OpenCode remains responsible for edits, shell commands, builds, tests and Git changes.
+
 # v0.7.8
 
 ## 0.7.8 — Authoritative live Git change context

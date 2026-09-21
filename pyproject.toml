@@ -1,7 +1,7 @@
 [project]
 name = "local-project-assistant"
-version = "0.7.8"
-description = "Local-first project assistant with authenticated Next.js/FastAPI UI, egress controls, iterative multi-repo RAG, knowledge graph, read-only retrieval planning and approval-gated changes"
+version = "0.7.9"
+description = "Local-first read-only project intelligence with authenticated Next.js/FastAPI UI, iterative multi-repo RAG, knowledge graph, live source retrieval and OpenCode handoff"
 requires-python = ">=3.11"
 dependencies = [
   "fastapi>=0.115.0",

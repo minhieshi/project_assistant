@@ -68,6 +68,12 @@ export type ContextSummary = {
   debug_path?: string;
 };
 
+
+export type ImplementationBriefResponse = {
+  brief: string;
+  context: ContextSummary;
+};
+
 export type AppStatus = {
   version: string;
   projects_root: string;

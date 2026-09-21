@@ -6,38 +6,39 @@ Restore the high-value parts of the enterprise ChatGPT browser experience locall
 
 ## Architecture
 
-- Git-backed local project workspaces with multiple registered source repositories.
+- Git-backed local project workspaces with multiple registered source repositories/folders.
 - Next.js browser UI with server-side proxy to an authenticated loopback-only FastAPI API.
 - Durable Markdown conversation history.
 - Incremental Chroma semantic index using approved Portkey embeddings.
 - Local SQLite FTS5 lexical/exact index.
 - Deterministic code-aware knowledge graph.
-- Repository catalogue/router and bounded context compiler.
+- Repository catalogue/router and bounded multi-round context compiler.
+- Controlled live read-only filesystem and Git inspection across registered roots.
 - GPT-5.6 inference through Portkey.
 - Pre-egress path/secret controls.
-- Two-stage plan + exact-diff approval before source mutation.
+- Structured OpenCode implementation-brief handoff for execution.
 
 ## Decisions
 
+- Project Assistant owns project understanding; OpenCode owns code execution.
+- Registered source roots are read-only from the active Project Assistant API/UI/CLI.
 - Treat source code as first-class RAG material.
 - Preserve repo/branch/commit/path/symbol/line metadata on code chunks.
 - Prefer structural chunks to fixed character chunks when language structure is detectable.
-- Use hybrid retrieval: exact + lexical + semantic + graph expansion.
-- Route across repos before spending context budget, but never suppress strong global exact matches.
+- Use hybrid retrieval: exact + lexical + semantic + graph expansion + live reads.
+- Route across repos as a boost only; never suppress strong global matches.
 - Keep graph extraction deterministic rather than LLM-generated.
-- Conversation Markdown is the first durable AI output for any proposed code change.
+- Persist conversations and generated OpenCode briefs in Markdown.
 - Browser JavaScript receives neither Portkey credentials nor the local FastAPI token.
-- A plan approval authorises preparation of a diff only; source mutation requires approval of the exact hashed diff.
-- Bind a staged diff to its registered repo and Git HEAD so approval is not reusable after source state changes.
 - Treat obvious secrets and sensitive credential files as non-egressable; local-only retrieval is allowed where appropriate.
-- Keep assistant state out of Git using local `.git/info/exclude` rather than modifying shared repository rules.
-- Create new projects as managed local Git repos; import existing repos in place without copying them.
-- Discover managed projects from disk at startup and persist only external imported-repo pointers.
-- Require an explicit enterprise `PORTKEY_BASE_URL`; never silently fall back to a public gateway.
+- Keep assistant state out of source Git repositories where practical.
+- Create new projects as managed local Git repos; import existing project repos in place without copying them.
+- Register independent source repositories/folders separately.
+- Require an explicit enterprise PORTKEY_BASE_URL; never silently fall back to a public gateway.
 
 ## Current work
 
-v0.6.7 makes multi-repo indexing safer and observable: unsuitable artefacts are excluded before embedding, final chunks are hard-bounded, provider-rejected files remain local-only, and the UI shows persisted per-repo indexing progress and skip reasons.
+v0.7.9 focuses Project Assistant on read-only project intelligence and high-quality OpenCode handoff. Retrieval/indexing/knowledge-graph work remains the core; source mutation is delegated to the coding agent.
 
 ## Known issues
 
@@ -123,6 +124,14 @@ Composer isolation, memoised Markdown messages, buffered streaming, lightweight 
 ## v0.7.7 — Live Git state verification
 
 Git metadata is refreshed independently of source content fingerprints. Change proposals receive an authoritative live branch/HEAD/working-tree snapshot for implicated registered sources; non-Git folders are explicitly marked not applicable.
+
+
+
+## v0.7.9 — Read-only project intelligence and coding-agent handoff
+
+The product boundary is now explicit: Project Assistant owns project understanding; OpenCode owns execution. Project Assistant may index and read registered source roots, inspect Git state, follow cross-repo relationships, reason about architecture/integration failures and produce implementation plans. It does not edit source files, stage/apply patches or run arbitrary shell commands.
+
+The primary execution handoff is a structured OpenCode implementation brief containing the problem/outcome, root-cause understanding, integration path, relevant repos/files/symbols, implementation direction, constraints, validation/tests, uncertainties and retrieval evidence. Briefs are persisted into the conversation Markdown and can be copied from the UI.
 
 
 ## v0.7.8 — Authoritative change context

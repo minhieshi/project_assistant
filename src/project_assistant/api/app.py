@@ -10,7 +10,6 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
-from ..change_gate import ChangeGate
 from ..config import ProjectConfig, SourceRoot
 from ..conversations import ConversationStore
 from ..knowledge_graph import KnowledgeGraph
@@ -25,17 +24,14 @@ from .schemas import (
     ProjectUpdateRequest,
     ProjectConvertToSourceRequest,
     ProjectPathRequest,
-    ProposalRequest,
-    PlanApprovalRequest,
-    PatchApprovalRequest,
+    ImplementationBriefRequest,
     QueryRequest,
     SourceRequest,
-    StagePatchRequest,
 )
 
 
 API_TOKEN = load_or_create_api_token()
-app = FastAPI(title="Local Project Assistant", version="0.7.8")
+app = FastAPI(title="Local Project Assistant", version="0.7.9")
 app.add_middleware(TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost", "testserver"])
 
 
@@ -86,17 +82,6 @@ def _store(project_id: str) -> ConversationStore:
     return ConversationStore(config.project_path(path, config.conversation_dir))
 
 
-def _gate(project_id: str) -> ChangeGate:
-    path = project_path(project_id)
-    config = ProjectConfig.load(path)
-    roots = [Path(s.path) for s in config.resolved_sources(path)] or [path]
-    return ChangeGate(path, _store(project_id), allowed_repo_roots=roots)
-
-
-def _proposal_payload(gate: ChangeGate, proposal) -> dict:
-    return gate.payload(proposal)
-
-
 def _sse(event: str, payload: dict | str) -> str:
     data = payload if isinstance(payload, str) else json.dumps(payload, ensure_ascii=False)
     return f"event: {event}\ndata: {data}\n\n"
@@ -104,7 +89,7 @@ def _sse(event: str, payload: dict | str) -> str:
 
 @app.get("/health")
 def health() -> dict:
-    return {"status": "ok", "version": "0.7.8"}
+    return {"status": "ok", "version": "0.7.9"}
 
 
 @app.get("/api/status")
@@ -114,7 +99,7 @@ def status() -> dict:
 
     settings = PortkeySettings.from_env()
     return {
-        "version": "0.7.8",
+        "version": "0.7.9",
         "projects_root": str(registry.projects_root),
         "portkey": {
             "base_url": settings.base_url,
@@ -330,74 +315,25 @@ def stream_chat(project_id: str, conversation_id: str, body: ChatRequest):
     return StreamingResponse(generate(), media_type="text/event-stream", headers={"Cache-Control": "no-store"})
 
 
-@app.post("/api/projects/{project_id}/conversations/{conversation_id}/proposals")
-async def propose_change(project_id: str, conversation_id: str, body: ProposalRequest) -> dict:
+@app.post("/api/projects/{project_id}/conversations/{conversation_id}/implementation-brief")
+async def prepare_implementation_brief(project_id: str, conversation_id: str, body: ImplementationBriefRequest) -> dict:
     try:
         assistant = assistant_for(project_id)
-        proposal = await asyncio.to_thread(assistant.propose_change, conversation_id, body.request)
-        return _proposal_payload(_gate(project_id), proposal)
-    except Exception as exc:
-        raise _error(exc)
-
-
-@app.get("/api/projects/{project_id}/proposals")
-def list_proposals(project_id: str, conversation_id: str | None = None) -> list[dict]:
-    try:
-        gate = _gate(project_id)
-        return [_proposal_payload(gate, proposal) for proposal in gate.list(conversation_id=conversation_id)]
-    except Exception as exc:
-        raise _error(exc)
-
-
-@app.post("/api/projects/{project_id}/proposals/{proposal_id}/approve-plan")
-def approve_plan(project_id: str, proposal_id: str, body: PlanApprovalRequest | None = None) -> dict:
-    try:
-        gate = _gate(project_id)
-        return _proposal_payload(gate, gate.approve_plan(proposal_id, body.approved_actions if body else None))
-    except Exception as exc:
-        raise _error(exc)
-
-
-@app.post("/api/projects/{project_id}/proposals/{proposal_id}/reject")
-def reject_proposal(project_id: str, proposal_id: str) -> dict:
-    try:
-        gate = _gate(project_id)
-        return _proposal_payload(gate, gate.reject(proposal_id))
-    except Exception as exc:
-        raise _error(exc)
-
-
-@app.post("/api/projects/{project_id}/proposals/{proposal_id}/stage-patch")
-def stage_patch(project_id: str, proposal_id: str, body: StagePatchRequest) -> dict:
-    try:
-        gate = _gate(project_id)
-        proposal = gate.stage_patch(proposal_id, Path(body.patch_path), Path(body.repo_path))
-        return _proposal_payload(gate, proposal)
-    except PermissionError as exc:
-        raise _error(exc, 403)
-    except Exception as exc:
-        raise _error(exc)
-
-
-@app.post("/api/projects/{project_id}/proposals/{proposal_id}/approve-patch")
-def approve_patch(project_id: str, proposal_id: str, body: PatchApprovalRequest | None = None) -> dict:
-    try:
-        gate = _gate(project_id)
-        return _proposal_payload(gate, gate.approve_patch(proposal_id, body.approval_checks if body else None))
-    except PermissionError as exc:
-        raise _error(exc, 403)
-    except Exception as exc:
-        raise _error(exc)
-
-
-@app.post("/api/projects/{project_id}/proposals/{proposal_id}/apply")
-def apply_patch(project_id: str, proposal_id: str) -> dict:
-    try:
-        gate = _gate(project_id)
-        proposal = gate.apply_patch(proposal_id)
-        return _proposal_payload(gate, proposal)
-    except PermissionError as exc:
-        raise _error(exc, 403)
+        brief, compiled, debug_path = await asyncio.to_thread(assistant.prepare_implementation_brief, conversation_id, body.focus)
+        return {
+            "brief": brief,
+            "context": {
+                "estimated_tokens": compiled.estimated_tokens,
+                "routed_repos": list(compiled.routed_repos),
+                "rag_sources": list(compiled.rag_sources),
+                "graph_sources": list(compiled.graph_sources),
+                "retrieval_queries": list(compiled.retrieval_queries),
+                "retrieval_actions": list(compiled.retrieval_actions),
+                "retrieval_warnings": list(compiled.retrieval_warnings),
+                "text": compiled.text,
+                "debug_path": str(debug_path),
+            },
+        }
     except Exception as exc:
         raise _error(exc)
 

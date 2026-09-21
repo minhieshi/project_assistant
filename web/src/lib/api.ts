@@ -4,9 +4,9 @@ import type {
   ConversationSummary,
   Project,
   ProjectConversion,
-  Proposal,
   AppStatus,
   IndexStatus,
+  ImplementationBriefResponse,
 } from "./types";
 
 const API_BASE = "/api/backend";
@@ -45,13 +45,7 @@ export const api = {
   conversations: (id: string) => request<ConversationSummary[]>(`/projects/${id}/conversations`),
   createConversation: (id: string, title: string) => request<ConversationSummary>(`/projects/${id}/conversations`, { method: "POST", body: JSON.stringify({ title }) }),
   conversation: (projectId: string, conversationId: string) => request<ConversationDetail>(`/projects/${projectId}/conversations/${conversationId}`),
-  proposals: (projectId: string, conversationId?: string) => request<Proposal[]>(`/projects/${projectId}/proposals${conversationId ? `?conversation_id=${encodeURIComponent(conversationId)}` : ""}`),
-  propose: (projectId: string, conversationId: string, changeRequest: string) => request<Proposal>(`/projects/${projectId}/conversations/${conversationId}/proposals`, { method: "POST", body: JSON.stringify({ request: changeRequest }) }),
-  approvePlan: (projectId: string, proposalId: string, approvedActions: string[] = []) => request<Proposal>(`/projects/${projectId}/proposals/${proposalId}/approve-plan`, { method: "POST", body: JSON.stringify({ approved_actions: approvedActions }) }),
-  reject: (projectId: string, proposalId: string) => request<Proposal>(`/projects/${projectId}/proposals/${proposalId}/reject`, { method: "POST" }),
-  stagePatch: (projectId: string, proposalId: string, patchPath: string, repoPath: string) => request<Proposal>(`/projects/${projectId}/proposals/${proposalId}/stage-patch`, { method: "POST", body: JSON.stringify({ patch_path: patchPath, repo_path: repoPath }) }),
-  approvePatch: (projectId: string, proposalId: string, approvalChecks: string[] = []) => request<Proposal>(`/projects/${projectId}/proposals/${proposalId}/approve-patch`, { method: "POST", body: JSON.stringify({ approval_checks: approvalChecks }) }),
-  applyPatch: (projectId: string, proposalId: string) => request<Proposal>(`/projects/${projectId}/proposals/${proposalId}/apply`, { method: "POST" }),
+  implementationBrief: (projectId: string, conversationId: string, focus = "") => request<ImplementationBriefResponse>(`/projects/${projectId}/conversations/${conversationId}/implementation-brief`, { method: "POST", body: JSON.stringify({ focus }) }),
   inspectContext: (projectId: string, query: string, conversationId?: string) => request<ContextSummary>(`/projects/${projectId}/context`, { method: "POST", body: JSON.stringify({ query, conversation_id: conversationId ?? null }) }),
 };
 

@@ -4,7 +4,6 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
-from .change_gate import ChangeGate, ChangeProposal
 from .config import PortkeySettings, ProjectConfig
 from .context_compiler import ContextCompiler
 from .conversations import ConversationStore
@@ -16,16 +15,18 @@ from .security import private_file
 from .source_access import RegisteredSourceAccess
 
 
-CHANGE_CONTROL = """
-CHANGE CONTROL — NON-NEGOTIABLE
-- During normal chat and proposal stages, you have no permission to modify source files.
-- If the user's request would change code/configuration, explain the intended change first: goal, files likely affected, implementation steps, validation, and material risks/trade-offs.
-- Do not claim a code change has been made when it has not.
-- Do not output a patch or full replacement source file during the proposal stage unless the user explicitly asks to inspect a draft; even then it remains unapplied.
-- Plan approval permits preparation of a candidate diff only. The backend, not the planning model, is responsible for staging/hash/base-HEAD binding.
-- Source mutation may happen only after the exact staged diff has its own explicit DIFF APPROVED state.
-- The applied diff must match the stored SHA-256, registered repo and Git HEAD recorded when it was staged.
+READ_ONLY_PROJECT_INTELLIGENCE = """
+PROJECT ASSISTANT ROLE — READ-ONLY PROJECT INTELLIGENCE
+- You may inspect indexed and live content under the Project Assistant workspace and registered source roots.
+- Never claim to have modified source code, configuration, Git state, or the working tree.
+- Project Assistant is responsible for understanding the project: retrieval, architecture, integration analysis, debugging context, design reasoning, and implementation planning.
+- A separate coding agent (OpenCode) is responsible for edits, shell commands, builds, tests, commits, and other source mutations.
+- When recommending implementation work, identify repositories, relative paths, symbols/components, constraints, validation steps, and uncertainties so the work can be handed off cleanly.
 """.strip()
+
+# Retained only for backwards-compatible internal proposal objects from older
+# releases. The v0.7.9 API/UI no longer exposes source mutation.
+CHANGE_CONTROL = READ_ONLY_PROJECT_INTELLIGENCE
 
 
 @dataclass
@@ -35,7 +36,6 @@ class ProjectAssistant:
     conversations: ConversationStore
     indexer: IncrementalIndexer
     compiler: ContextCompiler
-    gate: ChangeGate
     model: ChatModel
     retrieval_agent: RetrievalAgent
 
@@ -59,12 +59,10 @@ class ProjectAssistant:
             graph,
             max_tokens=int(os.getenv("CONTEXT_MAX_TOKENS", "48000")),
         )
-        allowed_roots = [project_dir, *[Path(s.path) for s in config.resolved_sources(project_dir)]]
-        gate = ChangeGate(project_dir, conversations, allowed_repo_roots=allowed_roots)
         chat_model = model or PortkeyChatModel(settings)
         toolkit = RetrievalToolkit(project_dir, config, indexer, graph)
         retrieval_agent = RetrievalAgent(chat_model, toolkit)
-        return cls(project_dir, config, conversations, indexer, compiler, gate, chat_model, retrieval_agent)
+        return cls(project_dir, config, conversations, indexer, compiler, chat_model, retrieval_agent)
 
     def compile_context(self, query: str, conversation_id: str | None = None, *, agentic: bool = True, purpose: str = "answer"):
         seed = self.compiler.initial_retrieval(query, conversation_id)
@@ -116,7 +114,7 @@ class ProjectAssistant:
             "- If a required artefact still was not surfaced after the bounded retrieval rounds, identify the exact missing artefact/search rather than pretending the project has no access to it.\n"
             "- Never claim you read a file unless it appears in retrieved context."
         )
-        system = self._system_prompt() + "\n\n" + CHANGE_CONTROL + "\n\n" + retrieval_rules
+        system = self._system_prompt() + "\n\n" + READ_ONLY_PROJECT_INTELLIGENCE + "\n\n" + retrieval_rules
         user = f"{context.text}\n\n## CURRENT USER REQUEST\n\n{user_text}"
         return context, system, user
 
@@ -150,26 +148,78 @@ class ProjectAssistant:
         self._safe_index(path)
         yield ("done", response)
 
-    def propose_change(self, conversation_id: str, request: str) -> ChangeProposal:
-        self.conversations.append(conversation_id, "user", request)
-        context = self.compile_context(request, conversation_id, agentic=True, purpose="change")
-        self.compiler.write_debug_snapshot(context)
-        git_state = self._live_git_state_all_sources()
-        system = self._system_prompt() + "\n\n" + CHANGE_CONTROL + "\n\nReturn a concise implementation proposal only."
-        user = (
-            f"{context.text}\n\n## LIVE REPOSITORY STATE\n\n{git_state}\n\n"
-            f"## CHANGE REQUEST\n\n{request}\n\n"
-            "Produce: goal; files/components likely affected; implementation steps; validation; risks/trade-offs. "
-            "Use LIVE REPOSITORY STATE as authoritative for Git branch/HEAD/working-tree status; it covers all registered source roots and is independent of RAG. "
-            "For non-Git sources, treat Git verification as not applicable rather than unresolved. "
-            "Do not refuse the proposal because a candidate diff has not yet been staged or hashed: proposal generation is only for identifying and verifying the intended change. The backend stages/hashes an exact diff only after plan approval. "
-            "Do not generate or apply a patch."
-        )
-        plan = self.model.complete(system, user)
-        proposal = self.gate.create(conversation_id, request, plan)
-        self._safe_index(self.conversations.find(conversation_id).path)
-        return proposal
 
+    def prepare_implementation_brief(self, conversation_id: str, focus: str = ""):
+        """Create a source-grounded handoff for a separate coding agent.
+
+        This is deliberately read-only. It may retrieve indexed content and live
+        files/Git metadata, but it never stages, hashes, applies, or writes source
+        changes. The resulting brief is persisted in the conversation so project
+        design decisions remain part of the knowledge base.
+        """
+        recent = self.conversations.recent_text(conversation_id, max_chars=18000)
+        entries = self.conversations.entries(conversation_id)
+        recent_user = [entry.body for entry in entries if entry.role == "user"][-5:]
+        retrieval_focus = focus.strip() or "\n\n".join(recent_user).strip()
+        if not retrieval_focus:
+            retrieval_focus = "Prepare an implementation handoff for the issue discussed in this conversation."
+        query = (
+            "Prepare a coding-agent implementation handoff for the project issue below. "
+            "Find the concrete repositories, files, symbols, integration boundaries, configuration and tests needed to implement it safely.\n\n"
+            + retrieval_focus[-12000:]
+        )
+        context = self.compile_context(query, conversation_id, agentic=True, purpose="handoff")
+        debug_path = self.compiler.write_debug_snapshot(context)
+        live_state = self._live_git_state_all_sources()
+        system = (
+            self._system_prompt()
+            + "\n\n"
+            + READ_ONLY_PROJECT_INTELLIGENCE
+            + "\n\n"
+            + "You are preparing a concise, source-grounded implementation brief for OpenCode, a separate coding agent. "
+              "Do not generate a patch and do not claim any file was changed. Prefer repository + relative path + symbol references over copying large source blocks. "
+              "Separate verified project evidence from inference and explicitly list unresolved questions when the retrieved material is insufficient."
+        )
+        user = f"""{context.text}
+
+## RECENT PROJECT CONVERSATION
+
+{recent}
+
+## OPTIONAL HANDOFF FOCUS
+
+{focus.strip() or '(use the current conversation as the focus)'}
+
+## LIVE REGISTERED SOURCE STATE
+
+{live_state}
+
+## OUTPUT FORMAT
+
+Return Markdown with these sections, omitting only sections that truly do not apply:
+
+# OpenCode implementation brief
+## Problem / desired outcome
+## Current understanding / root cause
+## Integration path
+## Relevant repositories and files
+For each relevant file: repository, relative path, important symbol/section, and why it matters.
+## Recommended implementation direction
+Give ordered implementation steps, but no patch.
+## Constraints and behaviours to preserve
+## Validation / tests
+## Uncertainties or checks for OpenCode
+## Retrieval evidence
+List the most useful source paths/symbols that grounded the brief.
+
+End with: "OpenCode: re-open the referenced live files and verify the working tree before editing."
+"""
+        brief = self.model.complete(system, user)
+        if focus.strip():
+            self.conversations.append_event(conversation_id, "Handoff Focus", focus.strip())
+        path = self.conversations.append_event(conversation_id, "OpenCode Implementation Brief", brief)
+        self._safe_index(path)
+        return brief, context, debug_path
 
     def _live_git_state_all_sources(self) -> str:
         """Return authoritative live state for every registered source root.
@@ -199,16 +249,6 @@ class ProjectAssistant:
     # intentionally because live Git verification must not depend on retrieval.
     def _live_git_state_for_context(self, context=None) -> str:
         return self._live_git_state_all_sources()
-
-    def approve(self, proposal_id: str):
-        proposal = self.gate.approve(proposal_id)
-        self._safe_index(self.conversations.find(proposal.conversation_id).path)
-        return proposal
-
-    def reject(self, proposal_id: str):
-        proposal = self.gate.reject(proposal_id)
-        self._safe_index(self.conversations.find(proposal.conversation_id).path)
-        return proposal
 
     def _safe_index(self, path: Path) -> None:
         # Conversation durability must not depend on the embedding endpoint being

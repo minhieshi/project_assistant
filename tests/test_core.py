@@ -422,7 +422,7 @@ class WebFoundationTests(unittest.TestCase):
     def test_api_app_imports_without_initialising_rag(self):
         from project_assistant.api.app import app
 
-        self.assertEqual(app.version, "0.7.8")
+        self.assertEqual(app.version, "0.7.9")
 
     def test_portkey_url_is_explicit_and_does_not_default_public(self):
         from project_assistant.config import PortkeySettings
@@ -439,6 +439,14 @@ class WebFoundationTests(unittest.TestCase):
         self.assertEqual(client.get("/api/projects").status_code, 401)
         response = client.get("/api/projects", headers={"x-project-assistant-token": API_TOKEN})
         self.assertEqual(response.status_code, 200)
+
+    def test_v079_public_api_is_read_only_for_source_repositories(self):
+        from project_assistant.api.app import app
+
+        paths = {route.path for route in app.routes}
+        self.assertIn("/api/projects/{project_id}/conversations/{conversation_id}/implementation-brief", paths)
+        self.assertFalse(any("/proposals" in path for path in paths))
+        self.assertFalse(any("stage-patch" in path or "approve-patch" in path or path.endswith("/apply") for path in paths))
 
 
 class IndexSafetyTests(unittest.TestCase):
@@ -1072,6 +1080,76 @@ class MultiRoundRetrievalTests(unittest.TestCase):
         self.assertIn("HEAD=abc123", model.user)
         self.assertIn("Git not applicable", model.user)
         self.assertIn("not responsible for staging, hashing or applying", model.system)
+
+    def test_handoff_mode_requires_live_file_oriented_context_and_has_no_mutation_role(self):
+        from project_assistant.retrieval_agent import RetrievalAgent
+
+        class FakeModel:
+            def __init__(self):
+                self.user = ""
+                self.system = ""
+            def complete(self, system, user):
+                self.system = system
+                self.user = user
+                return json.dumps({"sufficient": True, "actions": []})
+
+        class FakeToolkit:
+            def source_names(self):
+                return ("project", "java", "automation")
+            def live_repository_state_text(self):
+                return "- java: branch=main; HEAD=abc123; working_tree=clean"
+            def execute(self, action, limit=12):
+                return []
+
+        model = FakeModel()
+        agent = RetrievalAgent(model, FakeToolkit())  # type: ignore[arg-type]
+        agent.plan_and_retrieve("prepare implementation handoff", "recent", [], [], purpose="handoff")
+        self.assertIn("HANDOFF-MODE RULES", model.system)
+        self.assertIn("not responsible for editing, staging, hashing, testing, or applying changes", model.system)
+        self.assertIn("likely implementation/integration files", model.user)
+        self.assertIn("HEAD=abc123", model.user)
+
+class ImplementationBriefTests(unittest.TestCase):
+    def test_brief_is_persisted_as_conversation_event_without_source_mutation(self):
+        import sys
+        import types
+        from types import SimpleNamespace
+        fake_chroma = types.ModuleType("langchain_chroma")
+        fake_chroma.Chroma = object
+        fake_docs = types.ModuleType("langchain_core.documents")
+        fake_docs.Document = object
+        fake_fitz = types.ModuleType("fitz")
+        with patch.dict(sys.modules, {"langchain_chroma": fake_chroma, "langchain_core.documents": fake_docs, "fitz": fake_fitz}):
+            from project_assistant.assistant import ProjectAssistant
+
+        class FakeModel:
+            def complete(self, system, user):
+                self.system = system
+                self.user = user
+                return "# OpenCode implementation brief\n\n## Problem / desired outcome\nFix the integration.\n\nOpenCode: re-open the referenced live files and verify the working tree before editing."
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            store = ConversationStore(root / ".assistant/conversations")
+            conv = store.create("Integration issue")
+            store.append(conv.id, "user", "Trace the failing integration")
+            assistant = object.__new__(ProjectAssistant)
+            assistant.project_dir = root
+            assistant.conversations = store
+            assistant.model = FakeModel()
+            assistant._system_prompt = lambda: "You are a senior software engineer."
+            assistant.compiler = SimpleNamespace(write_debug_snapshot=lambda context: root / ".assistant/context.md")
+            assistant.compile_context = lambda *args, **kwargs: SimpleNamespace(text="retrieved live evidence")
+            assistant._live_git_state_all_sources = lambda: "- repo: branch=main; HEAD=abc; working_tree=clean"
+            assistant._safe_index = lambda path: None
+            brief, _context, debug_path = assistant.prepare_implementation_brief(conv.id, "focus here")
+            self.assertIn("OpenCode implementation brief", brief)
+            self.assertEqual(debug_path, root / ".assistant/context.md")
+            entries = store.entries(conv.id)
+            self.assertTrue(any(entry.title == "Handoff Focus" and entry.body == "focus here" for entry in entries))
+            self.assertTrue(any(entry.title == "OpenCode Implementation Brief" and "Fix the integration" in entry.body for entry in entries))
+            self.assertIn("Do not generate a patch", assistant.model.system)
+
 
 class GitStateRefreshTests(unittest.TestCase):
     def test_manifest_git_metadata_refreshes_after_plain_folder_becomes_repo(self):

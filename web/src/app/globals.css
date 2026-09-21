@@ -165,3 +165,9 @@ select.input { appearance: auto; }
 .streaming-message .message-body {
   white-space: pre-wrap;
 }
+
+/* v0.7.9 read-only intelligence + OpenCode handoff */
+.message-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 8px; }
+.message-heading .message-label { margin-bottom: 0; }
+.handoff-message { border: 1px solid #39415a; border-radius: 12px; padding: 14px; background: rgba(37, 42, 61, .34); }
+.handoff-message .message-body { margin-top: 10px; }

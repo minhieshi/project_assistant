@@ -38,6 +38,11 @@ class ChatRequest(BaseModel):
     message: str = Field(min_length=1, max_length=200_000)
 
 
+
+
+class ImplementationBriefRequest(BaseModel):
+    focus: str = Field(default="", max_length=100_000)
+
 class ProposalRequest(BaseModel):
     request: str = Field(min_length=1, max_length=100_000)
 

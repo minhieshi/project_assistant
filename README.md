@@ -1,455 +1,215 @@
-# Local Project Assistant — v0.7.8
+# Local Project Assistant — v0.7.9
 
-## v0.7.8 authoritative change context
+Project Assistant is a local-first **read-only project intelligence layer** for source-heavy engineering work. It keeps persistent project conversations and multi-repository knowledge locally, retrieves the right code/configuration context, and uses the configured enterprise Portkey routes for GPT-5.6 reasoning and embeddings.
 
-Change proposals no longer depend on RAG surfacing the correct repository before Git verification is available. Project Assistant injects current branch/HEAD/working-tree state for every registered source root before change planning. The change-mode retrieval agent is also instructed to read likely target files from the live filesystem and compare Git-backed targets with `git_show(HEAD, path)` where needed. Staging, hashing and base-HEAD binding remain backend operations after plan approval.
+Its boundary is deliberate:
 
+```text
+Project Assistant
+  understand / retrieve / investigate / design
+  prepare a source-grounded implementation brief
+                    |
+                    v
+                 OpenCode
+  edit / run commands / test / iterate / commit
+```
 
+Project Assistant does **not** edit registered source repositories, stage/apply patches, or expose arbitrary shell execution.
 
-## v0.7.8 Git-state refresh
+## v0.7.9 — OpenCode handoff
 
-If a registered source folder was indexed before it became a Git repository, run **Reindex changed files** once after upgrading. Project Assistant now refreshes branch/HEAD metadata for unchanged files without re-embedding them. Change proposals also verify live branch, HEAD and working-tree state for repos implicated by retrieval immediately before GPT prepares the proposal. Plain non-Git source folders are reported as **Git not applicable**, not as an unresolved verification error.
+The chat composer now has two modes:
 
-### Approval workflow
+- **Chat** — ask project questions, debug integrations, trace behaviour, discuss architecture/design and investigate failures.
+- **OpenCode brief** — package the current conversation into a structured implementation handoff. You can optionally type a narrower focus, or leave the box blank to use the current conversation.
 
-Change proposals now expose an explicit approval checklist in the web UI. Select the plan actions you approve and use **Approve selected actions**. The selected scope is recorded in the proposal and conversation ledger. After a candidate diff is staged, the exact diff still requires a separate checklist approval bound to its repository, base commit and SHA-256; applying it requires one final confirmation.
+The generated brief is persisted in the conversation Markdown and includes, where supported by retrieved evidence:
 
-A local-first engineering workbench for source-heavy enterprise work: persistent Markdown conversations, multi-repo RAG, deterministic knowledge graph, context compilation and two-stage approval-gated code changes.
+- problem / desired outcome;
+- current understanding and root cause;
+- integration path across repositories;
+- relevant repositories, relative paths and symbols;
+- ordered implementation direction without a patch;
+- constraints and behaviours to preserve;
+- validation/tests;
+- unresolved checks for OpenCode;
+- retrieval evidence.
+
+Each generated **OpenCode Implementation Brief** has a **Copy for OpenCode** button.
+
+## Architecture
 
 ```text
 Browser
   |
   v
 Next.js 127.0.0.1:3000
-  |  server-side proxy; local token never reaches browser JS
+  |  server-side proxy; local API token is not exposed to browser JS
   v
 FastAPI 127.0.0.1:8000
   |
-  +-- Markdown conversation ledger
-  +-- persistent Git-backed project discovery
+  +-- Markdown conversation history
+  +-- managed/imported project discovery
   +-- context compiler
   +-- SQLite FTS5 exact/lexical retrieval
   +-- deterministic knowledge graph
   +-- Chroma semantic retrieval
-  +-- change-control gate
+  +-- bounded multi-round retrieval planner
+  +-- controlled live read-only filesystem/Git tools
   |
   v
-Approved Portkey gateway
+Configured enterprise Portkey gateway
   +-- GPT-5.6 inference
   +-- approved embedding model
 ```
 
-The CLI remains available and uses the same project state.
+## Retrieval
 
-## Retrieval 2.1 — live registered-source exploration (v0.7.5)
+Normal chat and OpenCode handoffs automatically perform conversation-aware retrieval. **Compile context** is an inspection/debugging feature; it is not required before asking a question.
 
-Normal chat and change proposals perform iterative project retrieval automatically; you do not need to press **Compile context** first. The retrieval agent now has standing read-only access to the Project Assistant repo **and every registered external source repo/folder**, including files that were not surfaced by the initial RAG result. The pipeline is:
-
-```text
-current question + recent conversation
-        ↓
-conversation-aware query expansion
-        ↓
-local exact / FTS / knowledge graph
-+ bounded Portkey vector searches
-        ↓
-repo routing (boost only; never hard exclusion)
-        ↓
-initial coherent source map
-        ↓
-GPT-5.6 retrieval planner
-        ↓
-up to 3 bounded retrieve → inspect rounds
-        ↓
-read-only local tools
-  search_project / search_exact
-  find_symbol / find_references
-  list_files / find_files / grep_project
-  file_metadata / read_file / read_file_range
-  git_status / git_diff / git_log / git_show
-        ↓
-adjacent + dependency + same-file expansion
-        ↓
-final ~30 high-signal source chunks
-        ↓
-GPT-5.6 final answer
-```
-
-The retrieval planner cannot execute arbitrary shell commands or modify files. File/list/grep/Git operations are fixed backend functions scoped to the Project Assistant repo and explicitly registered source roots; direct file reads use the **live filesystem**, so the file does not have to have appeared in the vector index first. Symlink escapes, binary/archive reads and high-confidence secret material remain blocked.
-
-The default loop allows 3 planning rounds with up to 6 requested actions per round. Remote semantic `search_project` actions remain capped to 2 across the whole loop; file discovery, grep, direct reads, symbol/reference lookup and Git inspection are local. Configure with `RETRIEVAL_AGENT_MAX_ROUNDS` and `RETRIEVAL_AGENT_MAX_ACTIONS`, or set `RETRIEVAL_AGENT_ENABLED=0` to disable the planning loop. `CONTEXT_MAX_TOKENS` defaults to `48000`.
-
-The context inspector now shows the actual retrieval query variants and any planner-requested read-only operations, in addition to routed repos and source chunks. Repository routing is advisory: a strong hit from a lower-ranked repo can still enter context.
-
-### Upgrading an already-indexed project
-
-You **do not need to re-embed repositories for v0.7.5**. The live source tools read from the registered filesystem roots directly and use your existing RAG/FTS/graph data as the initial retrieval layer. If you have already performed the v0.7 graph refresh, simply install/restart this release.
-
-
-## Security model added in v0.4
-
-### 1. Browser/API isolation
-
-The browser no longer calls FastAPI directly.
-
-- FastAPI requires a randomly generated local API token for every `/api/*` request.
-- The token is stored at `~/.project-assistant/api-token` with user-only permissions by default.
-- Next.js reads the token **server-side** and proxies requests to FastAPI.
-- Browser JavaScript never receives the local API token or any Portkey credentials.
-- FastAPI refuses non-loopback binding unless `PROJECT_ASSISTANT_ALLOW_NON_LOOPBACK=1` is explicitly set.
-- The Next proxy rejects cross-site state-changing requests and only proxies to a loopback backend.
-- `scripts/dev.sh` explicitly removes Portkey API/virtual-key/config variables from the frontend process.
-
-### 2. Filesystem and egress controls
-
-Before content can be sent to the Portkey embedding or chat endpoint:
-
-- project-internal configured paths must resolve inside the registered project;
-- symlinked source files that resolve outside a registered source root are ignored;
-- the whole filesystem root, whole home directory and known credential directories such as `.ssh`, `.aws`, `.gnupg` and macOS Keychains cannot be registered as sources;
-- obvious secret-bearing files such as `.env*`, `*.pem`, `*.key`, `*.p12`, `*.pfx`, `credentials*`, `.npmrc`, `.netrc` and kubeconfig are excluded;
-- source/document content is scanned for clear credential material before remote embeddings;
-- a file containing credential-like material remains available to local lexical/graph retrieval but is marked **local-only** and is not embedded remotely;
-- embedding queries and compiled GPT prompts receive a final secret scan immediately before Portkey;
-- retrieved source is marked as untrusted evidence in the compiled context;
-- absolute graph filesystem paths are replaced by repo-relative labels before GPT sees them.
-
-A block is recorded locally in `.assistant/security_events.log` without writing the secret value itself.
-
-### 3. Exact-diff approval binding
-
-Plan approval is **not** permission to modify source.
+The retrieval path combines:
 
 ```text
-change request
-     |
-     v
-AI proposal written to conversation.md
-     |
-     v
-PENDING PLAN APPROVAL
-     |
-     v
-Approve plan
-     |
-     v
-candidate diff may be prepared
-     |
-     v
-git apply --check
-copy exact diff into .assistant/patches
-record SHA-256 + repo + Git HEAD
-write exact diff into conversation.md
-     |
-     v
-PENDING DIFF APPROVAL
-     |
-     v
-Approve exact diff
-     |
-     v
-recheck hash + repo + HEAD + git apply --check
-     |
-     v
-apply stored diff only
+current request + recent conversation
+        |
+        +-- exact identifiers / paths / symbols
+        +-- SQLite FTS5 lexical search
+        +-- semantic vector retrieval
+        +-- deterministic knowledge graph
+        +-- repository routing as a boost, never a hard exclusion
+        |
+        v
+bounded GPT retrieval planner
+        |
+        +-- search_project / search_exact
+        +-- find_symbol / find_references
+        +-- list_files / find_files / grep_project
+        +-- file_metadata / read_file / read_file_range
+        +-- git_status / git_diff / git_log / git_show
+        |
+        v
+compiled high-signal project context
 ```
 
-If the stored diff changes by one byte, or Git `HEAD` moves after staging, the patch cannot be approved/applied and must be restaged.
+Live file/Git tools operate only inside the Project Assistant workspace and explicitly registered source roots. They do not expose an arbitrary shell and do not write to source repositories.
 
-An old v0.3 proposal in `approved` state is migrated only to `plan_approved`; it does **not** inherit permission to apply a patch.
+For **OpenCode brief** mode, the retrieval planner is specifically instructed to locate likely implementation/integration files, follow cross-repository dependencies, read important files live where possible, and return concrete repository/path/symbol references for the coding agent.
 
-## Data boundary
+## Projects and source roots
 
-Kept local on the Mac:
+A Project Assistant project owns its conversations/settings/indexes. Source repositories can live anywhere allowed by the source-root security policy and remain independent repositories/directories.
 
-- registered source repositories;
-- Chroma vector database;
-- SQLite FTS5 index;
-- deterministic knowledge graph;
-- repository catalogue/fingerprints;
-- conversation Markdown;
-- `PROJECT.md` project memory;
-- generated files, proposals, staged patches and context debug snapshots;
-- managed-project discovery state and imported-repo catalogue;
-- local API authentication token.
-
-Sent through the configured enterprise Portkey route only after the egress checks above:
-
-- approved-safe source/document chunks when embeddings are generated;
-- embedding search queries;
-- selected compiled context and user request for GPT inference.
-
-## Retrieval architecture
+Recommended layout:
 
 ```text
-                         question
-                            |
-       +--------------------+--------------------+
-       |                    |                    |
-       v                    v                    v
- exact identifiers      SQLite FTS5       Portkey embeddings
- / paths / symbols       lexical RAG            Chroma
-       |                    |                    |
-       +--------------------+--------------------+
-                            |
-                      repo routing
-                            |
-                   knowledge graph search
-                  + structural expansion
-                            |
-                     fused candidates
-                            |
-                      context compiler
-          + PROJECT.md + recent conversation
-                            |
-                         GPT-5.6
+~/.project-assistant/projects/mainframe-platform/   # Project Assistant workspace
+~/work/mainframe/ansible/                           # registered source
+~/work/mainframe/java/                              # registered source
+~/work/mainframe/config/                            # registered source, Git optional
 ```
 
-Code chunks retain repo/path/language/symbol/line metadata. Git-backed repos use `git ls-files` and attach branch/commit metadata.
+Register each independent child source rather than making a parent folder into a nested Git repository.
 
-## Requirements
+Both Git-backed and plain source directories are supported.
 
-- Python 3.11+
-- Node.js 20+
-- npm
-- Git
-- an enterprise-approved Portkey route exposing GPT-5.6 and an embedding model
+## Indexing
 
-## Install
+**Reindex changed files** is incremental:
 
-Backend:
+- unchanged file content is not re-embedded;
+- branch/HEAD metadata can refresh independently of content fingerprints;
+- unsuitable archives/compiled/binary/generated/oversized/sensitive artefacts are skipped;
+- provider-rejected or non-egressable content can remain available to local lexical/graph retrieval where appropriate;
+- indexing status and skip/local-only reasons are persisted and shown in the UI.
+
+The confirmed embedding route shape remains a direct HTTP equivalent of:
+
+```text
+POST $PORTKEY_BASE_URL/embeddings
+x-portkey-api-key: $PORTKEY_API_KEY
+Content-Type: application/json
+
+{
+  "model": "@bedrock-au/amazon.titan-embed-text-v2:0",
+  "input": "text"
+}
+```
+
+## Security boundary
+
+### Browser/API isolation
+
+- FastAPI binds to loopback by default.
+- Every `/api/*` request requires a generated local API token.
+- Next.js adds that token server-side; browser JavaScript does not receive it.
+- Portkey credentials remain backend-only.
+
+### Filesystem and egress controls
+
+- source roots must pass registration validation;
+- symlink escapes outside registered roots are rejected;
+- sensitive credential paths/files are excluded;
+- high-confidence secret material is blocked from outbound embedding/chat content;
+- local-only retrieval can remain available when egress is not permitted;
+- retrieved source is treated as untrusted evidence.
+
+### Source mutation
+
+The active v0.7.9 API/UI/CLI has no source patch staging/apply workflow. Registered source repositories are read through controlled tools only. Historical `change_gate.py` code/data is retained for compatibility with older project state but is not wired into the normal v0.7.9 execution path.
+
+## Persistent local state
+
+Project-local assistant state lives under `.assistant/`, including the semantic/lexical/graph indexes, index metadata/status, context debug snapshots and conversation Markdown. Managed/imported project discovery state lives under `~/.project-assistant/`.
+
+## Frontend performance
+
+The v0.7.6 performance work remains in place:
+
+- composer text is isolated from page-level React state;
+- historical Markdown messages are memoised;
+- streamed output is buffered rather than re-rendering per tiny token fragment;
+- compiled context is collapsed by default;
+- off-screen historical messages use browser content visibility.
+
+macOS Dictation works directly in the normal textarea; Project Assistant has no microphone/Whisper integration.
+
+## Install / upgrade
+
+From the project directory:
 
 ```bash
-cd project-assistant-v0.7
 python -m venv .venv
 source .venv/bin/activate
-pip install -e .
+python -m pip install --upgrade pip
+python -m pip install --force-reinstall --no-deps .
 ```
 
-Configure the approved Portkey route before indexing/chat. Project listing and conversation browsing work without it:
-
-```bash
-export PORTKEY_BASE_URL='https://your-approved-portkey-endpoint/v1'
-export PORTKEY_API_KEY='...'
-export PORTKEY_CHAT_MODEL='gpt-5.6'
-export PORTKEY_EMBEDDING_MODEL='@bedrock-au/amazon.titan-embed-text-v2:0'
-```
-
-Optional enterprise routing:
-
-```bash
-export PORTKEY_CHAT_VIRTUAL_KEY='...'
-export PORTKEY_EMBEDDING_VIRTUAL_KEY='...'
-export PORTKEY_CHAT_CONFIG_ID='...'
-export PORTKEY_EMBEDDING_CONFIG_ID='...'
-export PORTKEY_EXTRA_HEADERS_JSON='{}'
-```
-
-### Titan Text Embeddings V2 through Portkey
-
-For embeddings, v0.6.6 deliberately reproduces the known-good enterprise curl call using Python raw HTTP. It POSTs to `$PORTKEY_BASE_URL/embeddings` with only `x-portkey-api-key` and `Content-Type: application/json`, and the body contains only the configured full model string plus raw `input`. No SDK, provider splitting, virtual/config headers, `encoding_format`, `input_type`, dimensions, normalisation, or Bedrock-native fields are involved.
-
-Before indexing a repository, test the route with a fixed non-sensitive string:
-
-```bash
-project-assistant embedding-test
-```
-
-### Chat route test and reasoning
-
-The enterprise chat route is treated as an opaque Portkey model identifier and is passed through unchanged. Project Assistant defaults to `PORTKEY_REASONING_EFFORT=high` and deliberately accepts only `low`, `medium`, or `high` for this environment.
-
-`PORTKEY_API_MODE=chat_completions` sends `reasoning_effort="high"`; `PORTKEY_API_MODE=responses` sends `reasoning={"effort":"high"}`. Validate both the non-streaming and streaming path before normal use:
-
-```bash
-project-assistant chat-test
-```
-
-Embeddings use the exact raw-HTTP request shape proven by the working enterprise curl; chat uses the Portkey Python SDK. `PORTKEY_API_KEY` remains environment-backed and there is no hard-coded Portkey credential in the inference path.
-
-A healthy Titan V2 route should print approximately:
-
-```text
-OK model=@bedrock-au/amazon.titan-embed-text-v2:0 dimensions=1024
-```
-
-Only after that succeeds should you run the initial repository index.
-
-### Safe source filtering and indexing visibility
-
-v0.6.7 classifies Git-tracked files before parsing/embedding. Archives (`.jar`, `.war`, `.zip`, etc.), compiled artefacts (`.class`, native binaries), sensitive paths, unsupported formats, binary content, oversized text/PDFs, large generated source files, and minified/extreme-long-line payloads are skipped automatically instead of being sent to Portkey. Ordinary source code is still structurally chunked, and every final chunk is hard-bounded even when a single source line is enormous.
-
-The latest run is persisted to `.assistant/index_status.json` and shown in **Project → Index visibility** with per-repo scanned/indexed/unchanged/skipped/local-only/chunk counts, skip reasons, the current file during an active run, and recent skipped files. If Portkey rejects one otherwise eligible file, it is retained in local FTS/knowledge-graph retrieval as `embedding-rejected` and indexing continues.
-
-### Markdown rendering
-
-Assistant responses are rendered as GitHub-flavoured Markdown in the web UI. Fenced blocks such as ` ```sh ` / ` ```bash ` render as real code blocks rather than plain wrapped text. The renderer uses `react-markdown` + `remark-gfm`; raw HTML is not enabled. After upgrading from an earlier build, run `npm install` once so the two frontend dependencies are installed.
-
-### macOS Dictation
-
-Project Assistant no longer records or transcribes microphone audio itself. Dictation is handled by macOS directly in the chat textarea. Enable it under **System Settings → Keyboard → Dictation**, place the cursor in the message box, then use the Mac's configured Dictation shortcut (for example the microphone key or `Fn-D`, depending on your Mac/settings). Review the text before sending as normal.
-
-On managed Macs, whether Dictation is available and whether processing is forced on-device is controlled by macOS and your organisation's device-management policy. Project Assistant itself requires no Apple/iCloud account. In **System Settings → Keyboard → Dictation**, macOS shows whether general Dictation voice input/transcripts are processed on-device or sent to Siri servers; check that text before using Dictation with work material.
-
-### Create project
-
-**Create project repo** asks only for a name. The backend creates a new local Git repository under:
-
-```text
-~/.project-assistant/projects/<project-slug>/
-```
-
-Override that root with `PROJECT_ASSISTANT_PROJECTS_ROOT`. No remote is created. Managed projects are discovered directly from this directory every time the backend starts, so they do not depend on process memory or a registry entry.
-
-### Import Git repo
-
-**Import Git repo** accepts the path of an existing Git repository. The repository is not copied or moved. If it is not already a Project Assistant project, local metadata is created under `.assistant/` and excluded through `.git/info/exclude`; existing tracked source files are left alone. Imported paths are persisted in:
-
-```text
-~/.project-assistant/imports.json
-```
-
-On startup, the project list is the union of discovered managed repos and valid imported repos. v0.4 `registry.json` entries are migrated automatically.
-
-Project discovery does **not** initialise Chroma or require Portkey. If `PORTKEY_BASE_URL` is missing, the UI can still open projects and conversations; indexing/chat fail closed until an explicit approved URL is configured. There is no fallback to the public Portkey URL.
-
-Add any additional source repositories under **Project**, then choose **Reindex changed files**.
-
-The indexer:
-
-1. discovers tracked files with `git ls-files` for Git repos;
-2. rejects sensitive paths / escaping symlinks;
-3. fingerprints new/changed/deleted content;
-4. builds code-aware chunks;
-5. updates local FTS and knowledge-graph state;
-6. secret-scans file content;
-7. sends only safe chunks to the configured Portkey embedding model;
-8. updates Chroma.
-
-The indexing result includes a `local_only` count for changed files whose remote embedding was blocked.
-
-## Change workflow in the web UI
-
-Switch the composer to **Propose change**. The assistant creates a plan only and writes it to the conversation ledger.
-
-After **Approve plan**, you may stage a local unified diff against a registered Git repo. The backend validates it and records the exact diff, SHA-256 and base commit in the conversation.
-
-Only after **Approve exact diff** does the Apply button become available. Apply takes no arbitrary patch/repo parameters; it can apply only the previously staged and approved immutable diff.
-
-## Context inspector
-
-The right panel shows:
-
-- estimated token count;
-- routed repositories;
-- retrieved repo/path/line/symbol labels;
-- graph sources using repo-relative paths;
-- the exact compiled context when manually inspected.
-
-The latest snapshot is stored locally at:
-
-```text
-.assistant/debug/last_context.md
-```
-
-## CLI
-
-Project management can be used without loading the RAG/model dependencies:
-
-```bash
-project-assistant projects
-project-assistant project-create 'Mainframe Platform'
-project-assistant project-import /path/to/existing/repo --name 'Existing system'
-```
-
-Project operations:
-
-```bash
-project-assistant --project /path/to/project index
-project-assistant --project /path/to/project search 'where is IKJEFT01 invoked?'
-project-assistant --project /path/to/project graph IKJEFT01
-project-assistant --project /path/to/project context 'where do we execute TSO commands from batch?'
-
-project-assistant --project /path/to/project propose <conversation-id> 'change request'
-project-assistant --project /path/to/project approve <proposal-id>
-project-assistant --project /path/to/project stage-patch <proposal-id> /path/change.diff --repo /path/repo
-project-assistant --project /path/to/project approve-patch <proposal-id>
-project-assistant --project /path/to/project apply-patch <proposal-id>
-```
-
-## Local project layout
-
-A newly created managed project is its own local Git repo:
-
-```text
-~/.project-assistant/projects/mainframe-platform/
-├── .git/
-├── PROJECT.md
-├── assistant_system.md
-└── .assistant/
-    ├── project.json
-    ├── conversations/
-    ├── generated/
-    ├── proposals/
-    ├── patches/
-    ├── chroma/
-    ├── lexical.sqlite3
-    ├── knowledge_graph.sqlite3
-    ├── index_manifest.json
-    ├── security_events.log
-    └── debug/last_context.md
-```
-
-`.assistant/` is added to the repo's local `.git/info/exclude` when a project is initialised, so local assistant state is not accidentally committed and no shared `.gitignore` change is required. For an imported code repo, `PROJECT.md` and `assistant_system.md` also live under `.assistant/` to avoid adding root-level files to an existing repository.
-
-## Testing
-
-```bash
-PYTHONPATH=src python -m unittest discover -s tests -v
-```
-
-v0.6.7 has 32 backend/core regression tests covering the approval gate, retrieval/graph behaviour, API authentication, embedding request shape, hard chunk bounds, source-file exclusion policy, and persisted indexing visibility.
-
-After `npm install`:
+Install/update frontend dependencies when needed:
 
 ```bash
 cd web
-npm run typecheck
-npm run build
+npm install
+cd ..
 ```
 
-## Deliberate limitations
+Configure the required Portkey environment variables in your shell, then start the backend and frontend using your existing workflow or `scripts/dev.sh`.
 
-- Secret detection is a defensive filter, not a substitute for the organisation's DLP/egress controls.
-- Patch generation is still not automated; v0.4 stages an existing local unified diff after plan approval.
-- Git indexing excludes brand-new untracked files.
-- No filesystem watcher or reranker yet.
-- The knowledge graph is deterministic/structural rather than LLM-generated.
-- This remains a single-user local tool rather than a network service.
+No reindex is required solely for the v0.7.9 UI/handoff change. Reindex only when source/index metadata itself needs refreshing.
 
-## Correcting project mistakes
+## CLI
 
-Projects are editable. In the **Project** tab you can rename any project, remove source repositories, and safely correct an existing repo that was imported as a standalone project by mistake.
-
-For an imported project, choose **Convert to source repository**, select the real target project and optionally change the source name. The conversion is metadata-only: Project Assistant adds the existing repo path to the target project's source list and removes it from the imported-project catalogue. It does **not** copy, move, delete or modify the Git repository. Existing `.assistant` metadata is deliberately left in place so correction cannot destroy previous conversations.
-
-You can also choose **Forget as project** for an imported repo. This removes only the Project Assistant catalogue entry; it never deletes the repository.
-
-CLI equivalents:
+Useful commands include:
 
 ```bash
-project-assistant project-rename <project-id> 'New name'
-project-assistant project-convert-to-source <mistaken-project-id> <target-project-id> --name shared-source
-project-assistant project-forget <imported-project-id>
+project-assistant projects
+project-assistant --project /path/to/project index
+project-assistant --project /path/to/project chat-new "Investigation"
+project-assistant --project /path/to/project chat <conversation-id> "Why is this failing?"
+project-assistant --project /path/to/project handoff <conversation-id>
+project-assistant --project /path/to/project handoff <conversation-id> --focus "Fix the ANSWER integration issue"
+project-assistant --project /path/to/project context "How does asset rebuild flow across repos?"
+project-assistant --project /path/to/project search "IKJEFT01"
+project-assistant --project /path/to/project graph "AssetLookup"
 ```
 
-### Balanced credential handling (v0.6.7.5)
-
-Project Assistant now distinguishes **real/high-confidence secrets** from ordinary enterprise credential references. Files such as `.env`, private-key/certificate files and credential-sensitive directories are still excluded. Recognisable private keys and token formats still block remote egress. Ordinary source references such as vault paths, `*_PASSWORD_REFERENCE`, `secret_name`, `api_key` identifiers and environment-variable references no longer prevent embedding or chat.
-
-If a source contains a high-confidence secret it can remain in the local lexical/graph indexes, but its chunks are tagged as non-egress and are excluded from compiled GPT context.
-
-
-### Retrieval failure behaviour
-
-Semantic/vector retrieval is an enhancement, not a hard dependency for chat. If the Portkey/Bedrock embedding endpoint returns a transient or content-specific error while compiling context, Project Assistant continues with the persisted local FTS/exact index and knowledge graph. The Context inspector will show a retrieval warning. Raw HTML gateway error pages are not surfaced to the chat UI.
+`handoff` prints the generated OpenCode implementation brief and stores it in the conversation.
