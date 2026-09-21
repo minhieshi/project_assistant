@@ -63,15 +63,21 @@ The configured enterprise embedding route is `@bedrock-au/amazon.titan-embed-tex
 
 ## v0.6.3 Portkey SDK alignment
 
-- Embeddings now use Portkey's official Python SDK instead of hand-built HTTP or the OpenAI SDK.
-- Provider-prefixed embedding IDs are split into the SDK provider (`@bedrock-au`) and provider-native model (`amazon.titan-embed-text-v2:0`).
-- Titan calls send only the documented SDK arguments: one raw string `input` and the bare model name.
+- Embeddings use Portkey's official Python SDK instead of hand-built HTTP or the OpenAI SDK.
+- The enterprise embedding model slug is treated as opaque and passed unchanged to Portkey.
+- Embedding calls send only `model=<full model slug>` and one raw string `input`.
 - Chat also uses the Portkey Python SDK directly; the long enterprise model slug is passed through unchanged.
 - Real Portkey credentials remain environment-backed and are supplied to the SDK at runtime.
 - Chat reasoning defaults to the enterprise-supported `high` ceiling for both Chat Completions and Responses modes.
 - `embedding-test` and `chat-test` provide small, non-sensitive route validation before indexing or normal conversation use.
 
-## v0.6.4 embedding simplification
+## v0.6.5 embedding simplification
 
-- Embeddings now use the exact enterprise Portkey SDK call shape: `Portkey(...).completion.create(model=<full model id>, input=<raw text>)`.
+- Embeddings use `Portkey(...).embeddings.create(model=<full model id>, input=<raw text>)`.
+- The previous `completion.create(...)` attempt was removed because completions and embeddings use different request schemas.
 - No model/provider splitting or embedding-specific request fields are applied.
+
+
+## v0.6.6 embedding transport
+
+Embedding transport is intentionally a literal Python equivalent of the confirmed working curl: POST `{PORTKEY_BASE_URL}/embeddings`, send `x-portkey-api-key` and JSON content type, and serialize only `model` plus raw `input`. No embedding SDK or provider-specific translation is permitted on this path.

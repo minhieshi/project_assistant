@@ -1,12 +1,21 @@
 # Changelog
 
-## v0.6.4
+## v0.6.6
 
-- Simplified embeddings to match the enterprise Portkey example exactly: `Portkey(...).completion.create(model=<full configured model>, input=<raw text>)`.
-- The full model ID (for example `@bedrock-au/amazon.titan-embed-text-v2:0`) is passed unchanged.
-- Removed provider/model splitting, `embeddings.create`, `encoding_format`, `input_type`, provider arguments, and embedding-specific config/virtual-key injection from the embedding path.
-- The real Portkey API key remains environment-backed; it is never hard-coded into the source.
-- Added regression tests for the exact minimal call shape.
+- Replaced the embedding SDK path with raw HTTP that exactly mirrors the confirmed working curl request.
+- Embeddings now POST to `$PORTKEY_BASE_URL/embeddings` with only `x-portkey-api-key` and `Content-Type: application/json`.
+- Embedding JSON now contains exactly `model` and `input`; the full enterprise model slug is passed unchanged.
+- Embedding virtual-key/config/extra-header settings are deliberately ignored on this path so the request remains identical to the working curl.
+- Added regression tests that inspect the actual URL, HTTP method, headers, and serialized JSON request body.
+
+## v0.6.5
+
+- Corrected the Portkey embedding resource: embeddings now call `Portkey(...).embeddings.create(model=<full configured model>, input=<raw text>)`.
+- The full enterprise model ID (for example `@bedrock-au/amazon.titan-embed-text-v2:0`) is passed unchanged; Project Assistant does not split the provider slug.
+- Removed the mistaken `completion.create(...)` embedding path, which can leave the provider-facing embedding text null because completions use a different request schema.
+- No `provider`, `encoding_format`, `input_type`, dimensions, normalisation, or Bedrock-native fields are added by Project Assistant.
+- The real Portkey API key and enterprise base URL remain environment-backed.
+- Regression tests assert the exact minimal SDK call: only `model` and `input`.
 
 ## v0.6.3
 

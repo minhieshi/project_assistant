@@ -388,7 +388,7 @@ class WebFoundationTests(unittest.TestCase):
     def test_api_app_imports_without_initialising_rag(self):
         from project_assistant.api.app import app
 
-        self.assertEqual(app.version, "0.6.4")
+        self.assertEqual(app.version, "0.6.6")
 
     def test_portkey_url_is_explicit_and_does_not_default_public(self):
         from project_assistant.config import PortkeySettings
@@ -408,75 +408,89 @@ class WebFoundationTests(unittest.TestCase):
 
 
 class TitanEmbeddingTests(unittest.TestCase):
-    def test_embedding_adapter_calls_completion_create_with_full_model_and_raw_input_only(self):
-        from types import SimpleNamespace
+    def test_embedding_adapter_exactly_matches_known_good_curl_shape(self):
+        import json
         from project_assistant.config import PortkeySettings
         from project_assistant.portkey import PortkeyTitanEmbeddings
 
-        calls = []
+        requests = []
 
-        class Endpoint:
-            def create(self, **kwargs):
-                calls.append(kwargs)
-                return SimpleNamespace(data=[SimpleNamespace(embedding=[0.1, 0.2, 0.3])])
+        class FakeResponse:
+            def __enter__(self):
+                return self
 
-        client = SimpleNamespace(completion=Endpoint())
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return json.dumps({
+                    "data": [{"embedding": [0.1, 0.2, 0.3]}]
+                }).encode("utf-8")
+
+        def fake_urlopen(request):
+            requests.append(request)
+            return FakeResponse()
+
         settings = PortkeySettings(
             base_url="https://gateway.example.invalid/v1",
             api_key="test-portkey-key",
             chat_model="gpt-5.6",
             embedding_model="@bedrock-au/amazon.titan-embed-text-v2:0",
+            embedding_virtual_key="must-not-be-sent",
+            embedding_config_id="must-not-be-sent",
+            extra_headers={"x-must-not-be-sent": "nope"},
         )
-        embeddings = PortkeyTitanEmbeddings(settings, client_override=client)
+        embeddings = PortkeyTitanEmbeddings(settings, urlopen_override=fake_urlopen)
 
-        vectors = embeddings.embed_documents(["first raw document", "second raw document"])
-        query_vector = embeddings.embed_query("raw query")
+        vector = embeddings.embed_query("test")
 
-        self.assertEqual(vectors, [[0.1, 0.2, 0.3], [0.1, 0.2, 0.3]])
-        self.assertEqual(query_vector, [0.1, 0.2, 0.3])
+        self.assertEqual(vector, [0.1, 0.2, 0.3])
+        self.assertEqual(len(requests), 1)
+        request = requests[0]
+        self.assertEqual(request.full_url, "https://gateway.example.invalid/v1/embeddings")
+        self.assertEqual(request.get_method(), "POST")
+        self.assertEqual(request.get_header("X-portkey-api-key"), "test-portkey-key")
+        self.assertEqual(request.get_header("Content-type"), "application/json")
         self.assertEqual(
-            calls,
-            [
-                {"model": "@bedrock-au/amazon.titan-embed-text-v2:0", "input": "first raw document"},
-                {"model": "@bedrock-au/amazon.titan-embed-text-v2:0", "input": "second raw document"},
-                {"model": "@bedrock-au/amazon.titan-embed-text-v2:0", "input": "raw query"},
-            ],
+            json.loads(request.data.decode("utf-8")),
+            {
+                "model": "@bedrock-au/amazon.titan-embed-text-v2:0",
+                "input": "test",
+            },
         )
+        self.assertEqual(set(json.loads(request.data.decode("utf-8"))), {"model", "input"})
 
-    def test_embedding_sdk_constructor_uses_environment_api_key_without_provider_splitting(self):
-        import sys
-        from types import ModuleType, SimpleNamespace
+    def test_embedding_documents_make_one_exact_request_per_text(self):
+        import json
         from project_assistant.config import PortkeySettings
         from project_assistant.portkey import PortkeyTitanEmbeddings
 
-        constructor_calls = []
+        bodies = []
 
-        class FakePortkey:
-            def __init__(self, **kwargs):
-                constructor_calls.append(kwargs)
-                self.completion = SimpleNamespace(create=lambda **_: None)
+        class FakeResponse:
+            def __enter__(self): return self
+            def __exit__(self, exc_type, exc, tb): return False
+            def read(self):
+                return json.dumps({"data": [{"embedding": [1, 2]}]}).encode("utf-8")
 
-        fake_module = ModuleType("portkey_ai")
-        fake_module.Portkey = FakePortkey
+        def fake_urlopen(request):
+            bodies.append(json.loads(request.data.decode("utf-8")))
+            return FakeResponse()
+
         settings = PortkeySettings(
-            base_url="https://gateway.example.invalid/v1",
+            base_url="https://gateway.example.invalid/v1/",
             api_key="test-portkey-key",
             chat_model="gpt-5.6",
             embedding_model="@bedrock-au/amazon.titan-embed-text-v2:0",
-            embedding_virtual_key="ignored-for-this-minimal-path",
-            embedding_config_id="ignored-for-this-minimal-path",
         )
-        embeddings = PortkeyTitanEmbeddings(settings)
-        with patch.dict(sys.modules, {"portkey_ai": fake_module}):
-            embeddings._client()
+        embeddings = PortkeyTitanEmbeddings(settings, urlopen_override=fake_urlopen)
+        vectors = embeddings.embed_documents(["first", "second"])
 
-        self.assertEqual(
-            constructor_calls,
-            [{
-                "api_key": "test-portkey-key",
-                "base_url": "https://gateway.example.invalid/v1",
-            }],
-        )
+        self.assertEqual(vectors, [[1.0, 2.0], [1.0, 2.0]])
+        self.assertEqual(bodies, [
+            {"model": "@bedrock-au/amazon.titan-embed-text-v2:0", "input": "first"},
+            {"model": "@bedrock-au/amazon.titan-embed-text-v2:0", "input": "second"},
+        ])
 
     def test_embedding_response_can_be_direct_embedding_shape(self):
         from project_assistant.portkey import PortkeyTitanEmbeddings

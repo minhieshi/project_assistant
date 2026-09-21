@@ -16,46 +16,42 @@ class StreamingChatModel(Protocol):
 
 
 class PortkeyEmbeddings:
-    """Minimal Portkey SDK embedding adapter.
+    """Raw-HTTP Portkey embedding adapter.
 
-    This intentionally mirrors the enterprise Portkey example exactly:
-    construct ``Portkey`` with the API key, then call
-    ``client.completion.create(model=<full model id>, input=<raw text>)``.
+    This intentionally mirrors the known-good curl request exactly:
 
-    Do not split provider/model identifiers or add provider-specific fields.
+        POST {PORTKEY_BASE_URL}/embeddings
+        x-portkey-api-key: $PORTKEY_API_KEY
+        Content-Type: application/json
+
+        {"model": "<full configured model slug>", "input": "<raw text>"}
+
+    Do not add provider parsing, SDK defaults, routing headers, or Bedrock-native
+    fields here unless the known-good enterprise curl changes.
     """
 
     def __init__(
         self,
         settings: PortkeySettings,
         policy: EgressPolicy | None = None,
-        client_override: object | None = None,
+        urlopen_override: object | None = None,
     ) -> None:
         self.settings = settings
         self.policy = policy or EgressPolicy()
-        self.client_override = client_override
-
-    def _client(self):
-        if self.client_override is not None:
-            return self.client_override
-
-        from portkey_ai import Portkey
-
-        # Keep this deliberately minimal. The API key comes only from the
-        # environment-backed PortkeySettings. The enterprise base URL is
-        # supplied only when configured; the embedding request itself is
-        # exactly model + input.
-        kwargs: dict[str, object] = {
-            "api_key": self.settings.api_key,
-        }
-        if self.settings.base_url:
-            kwargs["base_url"] = self.settings.base_url
-        return Portkey(**kwargs)
+        self.urlopen_override = urlopen_override
 
     @staticmethod
     def _extract_embedding(response: object) -> list[float]:
-        # Support the common OpenAI-style Portkey response plus a couple of
-        # direct SDK response shapes without altering the request.
+        if isinstance(response, dict):
+            direct = response.get("embedding")
+            if isinstance(direct, (list, tuple)):
+                return [float(value) for value in direct]
+            raw_data = response.get("data")
+            if isinstance(raw_data, list) and raw_data:
+                first = raw_data[0]
+                if isinstance(first, dict) and isinstance(first.get("embedding"), (list, tuple)):
+                    return [float(value) for value in first["embedding"]]
+
         data = getattr(response, "data", None)
         if data:
             first = data[0]
@@ -68,28 +64,52 @@ class PortkeyEmbeddings:
         embedding = getattr(response, "embedding", None)
         if isinstance(embedding, (list, tuple)):
             return [float(value) for value in embedding]
-        if isinstance(response, dict):
-            direct = response.get("embedding")
-            if isinstance(direct, (list, tuple)):
-                return [float(value) for value in direct]
-            raw_data = response.get("data")
-            if isinstance(raw_data, list) and raw_data:
-                first = raw_data[0]
-                if isinstance(first, dict) and isinstance(first.get("embedding"), (list, tuple)):
-                    return [float(value) for value in first["embedding"]]
 
         raise RuntimeError("Portkey embedding response contained no vector")
 
     def _embed_one(self, text: str, *, label: str) -> list[float]:
+        import json
+        from urllib.error import HTTPError, URLError
+        from urllib.request import Request, urlopen
+
         self.policy.assert_text_safe(text, label=label)
         if not text or not text.strip():
             raise ValueError("Embedding input must not be empty")
+        if not self.settings.base_url:
+            raise RuntimeError("PORTKEY_BASE_URL is not configured")
+        if not self.settings.api_key:
+            raise RuntimeError("PORTKEY_API_KEY is not configured")
+        if not self.settings.embedding_model:
+            raise RuntimeError("PORTKEY_EMBEDDING_MODEL is not configured")
 
-        response = self._client().completion.create(
-            model=self.settings.embedding_model,
-            input=text,
+        url = f"{self.settings.base_url.rstrip('/')}/embeddings"
+        body = json.dumps(
+            {
+                "model": self.settings.embedding_model,
+                "input": text,
+            }
+        ).encode("utf-8")
+        request = Request(
+            url,
+            data=body,
+            headers={
+                "x-portkey-api-key": self.settings.api_key,
+                "Content-Type": "application/json",
+            },
+            method="POST",
         )
-        return self._extract_embedding(response)
+
+        opener = self.urlopen_override or urlopen
+        try:
+            with opener(request) as raw_response:
+                payload = json.loads(raw_response.read().decode("utf-8"))
+        except HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="replace")
+            raise RuntimeError(f"Portkey embedding HTTP {exc.code}: {detail}") from exc
+        except URLError as exc:
+            raise RuntimeError(f"Portkey embedding request failed: {exc.reason}") from exc
+
+        return self._extract_embedding(payload)
 
     def embed_documents(self, texts: list[str]) -> list[list[float]]:
         return [self._embed_one(text, label="embedding input") for text in texts]
