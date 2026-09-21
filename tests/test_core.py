@@ -132,13 +132,23 @@ class CoreTests(unittest.TestCase):
 
 
 class SecurityTests(unittest.TestCase):
-    def test_egress_policy_blocks_clear_secret_but_allows_placeholder(self):
+    def test_egress_policy_blocks_high_confidence_secret_but_allows_references(self):
         policy = EgressPolicy()
         with self.assertRaises(EgressBlockedError):
-            policy.assert_text_safe('api_key = "sk_live_1234567890abcdef"')
+            policy.assert_text_safe('AWS_ACCESS_KEY_ID="AKIA1234567890ABCDEF"')
+        # Common enterprise references/identifiers are advisory, not blockers.
+        policy.assert_text_safe('api_key = "venafi-production-api-key-reference"')
+        policy.assert_text_safe('password = "RACF_PASSWORD_REFERENCE"')
         policy.assert_text_safe('api_key = "${PORTKEY_API_KEY}"')
+        self.assertIn("credential-reference", policy.advisory_findings('secret = "vault/path/to/service/account"'))
         self.assertFalse(policy.path_allowed(Path(".env")))
         self.assertFalse(policy.path_allowed(Path("client.pem")))
+
+    def test_outbound_metadata_filter_blocks_only_explicit_non_egress_chunks(self):
+        from project_assistant.security import outbound_metadata_allowed
+        self.assertTrue(outbound_metadata_allowed({}))
+        self.assertTrue(outbound_metadata_allowed({"egress_allowed": True}))
+        self.assertFalse(outbound_metadata_allowed({"egress_allowed": False}))
 
     def test_project_config_rejects_internal_path_escape(self):
         from project_assistant.config import ProjectConfig, init_project

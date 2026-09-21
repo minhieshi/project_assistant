@@ -41,13 +41,19 @@ SENSITIVE_PATH_PARTS = {".ssh", ".aws", ".gnupg", "keychains"}
 
 # Patterns are intentionally conservative. They look for actual credential-like
 # values, not merely words such as "password" in source code.
-SECRET_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+HARD_SECRET_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("private-key", re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----")),
     ("aws-access-key", re.compile(r"\b(?:AKIA|ASIA)[A-Z0-9]{16}\b")),
     ("github-token", re.compile(r"\bgh[pousr]_[A-Za-z0-9]{30,}\b")),
     ("slack-token", re.compile(r"\bxox[baprs]-[A-Za-z0-9-]{20,}\b")),
+)
+
+# These matches are useful for visibility but are intentionally not blockers.
+# Enterprise code frequently contains secret *references* and configuration names
+# that look credential-like without containing credential material.
+ADVISORY_SECRET_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     (
-        "credential-assignment",
+        "credential-reference",
         re.compile(
             r"(?im)\b(?:password|passwd|api[_-]?key|client[_-]?secret|access[_-]?token|refresh[_-]?token|private[_-]?key|secret)\b"
             r"\s*[:=]\s*[\"']?([^\s\"'#,;]{12,}|[^\"'\n]{16,})[\"']?"
@@ -156,6 +162,11 @@ def path_is_within(root: Path, candidate: Path) -> bool:
         return False
 
 
+def outbound_metadata_allowed(metadata: dict) -> bool:
+    """Return False only for chunks explicitly marked as non-egress."""
+    return metadata.get("egress_allowed", True) is not False
+
+
 def validate_source_root(path: Path) -> Path:
     resolved = path.expanduser().resolve()
     if not resolved.exists() or not resolved.is_dir():
@@ -181,10 +192,10 @@ class EgressPolicy:
             return False
         return True
 
-    def findings(self, text: str) -> list[str]:
+    @staticmethod
+    def _scan(text: str, patterns: tuple[tuple[str, re.Pattern[str]], ...]) -> list[str]:
         findings: list[str] = []
-        lower = text.lower()
-        for label, pattern in SECRET_PATTERNS:
+        for label, pattern in patterns:
             for match in pattern.finditer(text):
                 candidate = match.group(1) if match.lastindex else match.group(0)
                 candidate_lower = candidate.lower()
@@ -194,8 +205,20 @@ class EgressPolicy:
                 break
         return sorted(set(findings))
 
+    def hard_findings(self, text: str) -> list[str]:
+        """High-confidence credential material that must not leave the machine."""
+        return self._scan(text, HARD_SECRET_PATTERNS)
+
+    def advisory_findings(self, text: str) -> list[str]:
+        """Credential-looking references that should not block normal source/chat."""
+        return self._scan(text, ADVISORY_SECRET_PATTERNS)
+
+    def findings(self, text: str) -> list[str]:
+        # Backwards-compatible meaning: only findings strong enough to block egress.
+        return self.hard_findings(text)
+
     def assert_text_safe(self, text: str, *, label: str = "outbound content") -> None:
-        found = self.findings(text)
+        found = self.hard_findings(text)
         if found:
             raise EgressBlockedError(
                 f"Blocked {label} from leaving the machine because it appears to contain: {', '.join(found)}"

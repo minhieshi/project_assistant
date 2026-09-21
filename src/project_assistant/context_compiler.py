@@ -9,7 +9,7 @@ from .conversations import ConversationStore
 from .indexing import IncrementalIndexer, SearchHit
 from .knowledge_graph import KnowledgeGraph
 from .repo_catalog import RepoRoute
-from .security import private_file
+from .security import outbound_metadata_allowed, private_file
 
 
 @dataclass(frozen=True)
@@ -127,7 +127,8 @@ class ContextCompiler:
     def _render_rag(self, hits: list[SearchHit]) -> tuple[str, list[str]]:
         blocks: list[str] = []
         sources: list[str] = []
-        for i, hit in enumerate(hits, start=1):
+        safe_hits = [hit for hit in hits if outbound_metadata_allowed(hit.metadata)]
+        for i, hit in enumerate(safe_hits, start=1):
             src = hit.metadata.get("source", "unknown")
             rel = hit.metadata.get("relative_path", src)
             repo = hit.metadata.get("repo", "source")

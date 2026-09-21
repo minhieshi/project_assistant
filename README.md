@@ -1,4 +1,4 @@
-# Local Project Assistant — v0.6.7.3
+# Local Project Assistant — v0.6.7.4
 
 A local-first engineering workbench for source-heavy enterprise work: persistent Markdown conversations, multi-repo RAG, deterministic knowledge graph, context compilation and two-stage approval-gated code changes.
 
@@ -161,7 +161,7 @@ Code chunks retain repo/path/language/symbol/line metadata. Git-backed repos use
 Backend:
 
 ```bash
-cd project-assistant-v0.6.7.3
+cd project-assistant-v0.6.7.4
 python -m venv .venv
 source .venv/bin/activate
 pip install -e .
@@ -414,3 +414,9 @@ project-assistant project-rename <project-id> 'New name'
 project-assistant project-convert-to-source <mistaken-project-id> <target-project-id> --name shared-source
 project-assistant project-forget <imported-project-id>
 ```
+
+### Balanced credential handling (v0.6.7.4)
+
+Project Assistant now distinguishes **real/high-confidence secrets** from ordinary enterprise credential references. Files such as `.env`, private-key/certificate files and credential-sensitive directories are still excluded. Recognisable private keys and token formats still block remote egress. Ordinary source references such as vault paths, `*_PASSWORD_REFERENCE`, `secret_name`, `api_key` identifiers and environment-variable references no longer prevent embedding or chat.
+
+If a source contains a high-confidence secret it can remain in the local lexical/graph indexes, but its chunks are tagged as non-egress and are excluded from compiled GPT context.

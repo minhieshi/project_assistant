@@ -267,7 +267,7 @@ export default function Home() {
   return (
     <div className="app-shell">
       <aside className="sidebar">
-        <div className="brand">Project Assistant <span className="small">v0.6.7.3</span></div>
+        <div className="brand">Project Assistant <span className="small">v0.6.7.4</span></div>
         {appStatus && <div className="notice" style={{ marginBottom: 12 }}>Projects: {appStatus.projects_root}<br />Portkey: {appStatus.portkey.base_url_configured ? "URL configured" : "URL missing"}</div>}
 
         <div className="section-title">Projects</div>

@@ -17,7 +17,7 @@ from .code_chunking import CodeChunker
 from .config import ProjectConfig, SourceRoot
 from .knowledge_graph import KnowledgeGraph
 from .index_status import IndexStatusStore
-from .index_policy import FileEligibilityPolicy, should_skip_dir
+from .index_policy import INDEX_POLICY_VERSION, FileEligibilityPolicy, should_skip_dir
 from .lexical_index import LexicalHit, LexicalIndex
 from .repo_catalog import RepositoryCatalog
 from .security import EgressPolicy, private_file, path_is_within
@@ -88,7 +88,11 @@ class IncrementalIndexer:
                 self.status_store.current(source.name, rel)
                 fingerprint = self._fingerprint(path)
                 record = manifest.get(source_path)
-                if record and record.get("fingerprint") == fingerprint:
+                if (
+                    record
+                    and record.get("fingerprint") == fingerprint
+                    and record.get("index_policy_version") == INDEX_POLICY_VERSION
+                ):
                     unchanged += 1
                     self.status_store.status.unchanged += 1
                     self.status_store.repo(source.name).unchanged += 1
@@ -272,15 +276,22 @@ class IncrementalIndexer:
             chunk.metadata["chunk_index"] = i
             chunk_ids.append(cid)
 
-        # Lexical/graph indexes are local. Before any chunk is sent to the remote
-        # embedding endpoint, scan the complete file content. If credential-like
-        # material is present, keep that file local-only rather than sending even
-        # an apparently safe neighbouring chunk.
+        # Lexical/graph indexes are local. Only high-confidence credential
+        # material blocks remote embeddings. Ordinary credential references
+        # (vault names, secret identifiers, environment-variable references, etc.)
+        # are advisory and remain eligible for RAG. Mark every lexical chunk so
+        # the context compiler can keep hard-blocked local-only content off the
+        # outbound GPT path.
+        hard_findings = sorted({finding for chunk in docs for finding in self.egress.hard_findings(chunk.page_content)})
+        advisory_findings = sorted({finding for chunk in docs for finding in self.egress.advisory_findings(chunk.page_content)})
+        egress_allowed = not hard_findings
         for chunk, cid in zip(docs, chunk_ids):
+            chunk.metadata["egress_allowed"] = egress_allowed
+            chunk.metadata["egress_advisory"] = ",".join(advisory_findings)
             self.lexical.upsert(cid, chunk.page_content, chunk.metadata)
 
-        findings = sorted({finding for chunk in docs for finding in self.egress.findings(chunk.page_content)})
-        vector_indexed = bool(docs) and not findings
+        findings = hard_findings
+        vector_indexed = bool(docs) and egress_allowed
         embedding_error = None
         if vector_indexed:
             try:
@@ -305,6 +316,7 @@ class IncrementalIndexer:
         git = self._git_metadata(Path(source.path)) if source.name != "project" else {"branch": None, "commit": None}
         return {
             "fingerprint": fingerprint,
+            "index_policy_version": INDEX_POLICY_VERSION,
             "chunk_ids": chunk_ids,
             "source": source.name,
             "relative_path": self._relative(path, Path(source.path)),
@@ -312,6 +324,7 @@ class IncrementalIndexer:
             "git_commit": git.get("commit"),
             "vector_indexed": vector_indexed,
             "egress_blocked": findings,
+            "egress_advisory": advisory_findings,
             "embedding_error": embedding_error,
         }
 

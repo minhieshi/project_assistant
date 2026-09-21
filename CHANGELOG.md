@@ -1,3 +1,13 @@
+# Changelog
+
+## 0.6.7.4 — Balanced egress policy
+
+- Relaxed source/chat text scanning to block only high-confidence credential material.
+- Credential-looking references, vault paths, environment-variable references and config identifiers are advisory and no longer prevent embedding/chat.
+- Sensitive file/path exclusions remain in place (`.env`, private-key/certificate files, credential directories).
+- Hard-blocked local-only chunks are tagged `egress_allowed=false` and excluded from compiled outbound GPT context.
+- Added regression tests for reference-heavy source code and context filtering.
+
 ## v0.6.7.3
 
 - Fixed Project-tab vertical scrolling when many source repositories/index rows make the page taller than the viewport.
