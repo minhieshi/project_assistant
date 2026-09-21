@@ -13,6 +13,7 @@ from .knowledge_graph import KnowledgeGraph
 from .portkey import ChatModel, PortkeyChatModel, get_embedding_function
 from .retrieval_agent import RetrievalAgent, RetrievalToolkit
 from .security import private_file
+from .source_access import RegisteredSourceAccess
 
 
 CHANGE_CONTROL = """
@@ -152,16 +153,56 @@ class ProjectAssistant:
         self.conversations.append(conversation_id, "user", request)
         context = self.compile_context(request, conversation_id, agentic=True)
         self.compiler.write_debug_snapshot(context)
+        git_state = self._live_git_state_for_context(context)
         system = self._system_prompt() + "\n\n" + CHANGE_CONTROL + "\n\nReturn a concise implementation proposal only."
         user = (
-            f"{context.text}\n\n## CHANGE REQUEST\n\n{request}\n\n"
+            f"{context.text}\n\n## LIVE REPOSITORY STATE\n\n{git_state}\n\n"
+            f"## CHANGE REQUEST\n\n{request}\n\n"
             "Produce: goal; files/components likely affected; implementation steps; validation; risks/trade-offs. "
+            "Use LIVE REPOSITORY STATE as authoritative for Git branch/HEAD/working-tree status; indexed Git metadata may be historical. "
+            "For non-Git sources, treat Git verification as not applicable rather than unresolved. "
             "Do not generate or apply a patch."
         )
         plan = self.model.complete(system, user)
         proposal = self.gate.create(conversation_id, request, plan)
         self._safe_index(self.conversations.find(conversation_id).path)
         return proposal
+
+
+    def _live_git_state_for_context(self, context) -> str:
+        """Verify live repository state for sources implicated by retrieval.
+
+        Proposal generation must not rely on Git metadata captured when chunks were
+        embedded. Determine the relevant source roots from retrieved evidence/routes
+        and inspect their current state immediately before the proposal model call.
+        """
+        repos: list[str] = []
+        for hit in getattr(context, "retrieved_hits", ()):
+            repo = str(hit.metadata.get("repo", "")).strip()
+            if repo and repo not in repos:
+                repos.append(repo)
+        for repo in getattr(context, "routed_repos", ()):
+            if repo and repo not in repos:
+                repos.append(repo)
+        if not repos:
+            repos = [source.name for source in self.config.resolved_sources(self.project_dir)]
+
+        access = RegisteredSourceAccess(self.project_dir, self.config)
+        states = access.repository_states(repos)
+        if not states:
+            return "No registered source repositories were implicated by retrieval."
+
+        lines: list[str] = []
+        for state in states:
+            repo = str(state["repo"])
+            if not state["is_git"]:
+                lines.append(f"- {repo}: Git not applicable (registered source is not an independent Git repository).")
+                continue
+            branch = state.get("branch") or "(detached/no branch)"
+            head = state.get("head") or "unavailable"
+            working_tree = state.get("working_tree") or "unknown"
+            lines.append(f"- {repo}: branch={branch}; HEAD={head}; working_tree={working_tree}")
+        return "\n".join(lines)
 
     def approve(self, proposal_id: str):
         proposal = self.gate.approve(proposal_id)

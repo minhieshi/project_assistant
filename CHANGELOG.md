@@ -1,4 +1,31 @@
-## 0.7.4 — Live source exploration and multi-round retrieval
+# v0.7.7
+
+## 0.7.7 — Live Git state verification
+
+- Refresh branch/HEAD metadata during reindex even when source file contents are unchanged; no re-embedding is required.
+- Clear cached Git metadata at the start of each indexing run so later commits are visible.
+- Before generating a change proposal, verify live Git branch, HEAD and working-tree state for source repos implicated by retrieval.
+- Treat registered non-Git source folders as `Git not applicable` rather than an unresolved verification failure.
+- Indexed Git metadata is explicitly historical; live proposal-time Git state is authoritative.
+
+# v0.7.6
+
+## 0.7.6 — Frontend performance
+
+- Isolated the chat composer from page-level React state so typing/macOS Dictation no longer re-renders the conversation tree.
+- Memoised historical Markdown messages.
+- Buffered streamed token updates to ~20 UI updates per second and render streaming text without Markdown parsing until completion.
+- Removed smooth scrolling from per-token streaming updates.
+- Collapsed the full compiled-context body by default.
+- Added `content-visibility` to historical messages so off-screen content can skip browser layout/paint work.
+
+# v0.7.5
+
+- Fix approval controls being hidden when the right-hand inspector is not visible.
+- Pending change proposals now render inline in the main chat above the composer as well as in the inspector.
+- Chat auto-scrolls when a proposal appears so the approval checklist/button is immediately reachable.
+
+## 0.7.5 — Live source exploration and multi-round retrieval
 
 - `read_file` / `read_file_range` now read the current filesystem directly from the Project Assistant repo or any registered external source root; they no longer depend on a file first being recovered through the lexical index.
 - Added fixed read-only tools: `list_files`, `find_files`, `grep_project`, `file_metadata`, `git_status`, `git_diff`, `git_log`, and `git_show`. No arbitrary shell execution is exposed.

@@ -1,4 +1,9 @@
-# Local Project Assistant — v0.7.4
+# Local Project Assistant — v0.7.7
+
+
+## v0.7.7 Git-state refresh
+
+If a registered source folder was indexed before it became a Git repository, run **Reindex changed files** once after upgrading. Project Assistant now refreshes branch/HEAD metadata for unchanged files without re-embedding them. Change proposals also verify live branch, HEAD and working-tree state for repos implicated by retrieval immediately before GPT prepares the proposal. Plain non-Git source folders are reported as **Git not applicable**, not as an unresolved verification error.
 
 ### Approval workflow
 
@@ -31,7 +36,7 @@ Approved Portkey gateway
 
 The CLI remains available and uses the same project state.
 
-## Retrieval 2.1 — live registered-source exploration (v0.7.4)
+## Retrieval 2.1 — live registered-source exploration (v0.7.5)
 
 Normal chat and change proposals perform iterative project retrieval automatically; you do not need to press **Compile context** first. The retrieval agent now has standing read-only access to the Project Assistant repo **and every registered external source repo/folder**, including files that were not surfaced by the initial RAG result. The pipeline is:
 
@@ -73,7 +78,7 @@ The context inspector now shows the actual retrieval query variants and any plan
 
 ### Upgrading an already-indexed project
 
-You **do not need to re-embed repositories for v0.7.4**. The live source tools read from the registered filesystem roots directly and use your existing RAG/FTS/graph data as the initial retrieval layer. If you have already performed the v0.7 graph refresh, simply install/restart this release.
+You **do not need to re-embed repositories for v0.7.5**. The live source tools read from the registered filesystem roots directly and use your existing RAG/FTS/graph data as the initial retrieval layer. If you have already performed the v0.7 graph refresh, simply install/restart this release.
 
 
 ## Security model added in v0.4

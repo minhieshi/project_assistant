@@ -197,6 +197,44 @@ class RegisteredSourceAccess:
         text = f"Grep results for {pattern!r}:\n" + ("\n".join(results) if results else "(none)")
         return [SearchHit(text, {"id": f"live:grep:{repo or 'all'}:{pattern}", "repo": repo or "project", "relative_path": relative_dir or ".", "egress_allowed": True}, 1.0, ("grep-project",))]
 
+
+    def repository_state(self, repo: str) -> dict[str, object]:
+        """Return live Git state for a registered source root.
+
+        Non-Git source folders are valid Project Assistant sources and are reported as
+        not applicable rather than as an unresolved verification failure.
+        """
+        root = self._root(repo)
+        try:
+            git_root = self._git_root(repo)
+        except SecurityError:
+            return {
+                "repo": repo,
+                "is_git": False,
+                "branch": None,
+                "head": None,
+                "working_tree": "not-applicable",
+            }
+        branch = self._run_git(git_root, ["branch", "--show-current"]).strip() or None
+        head = self._run_git(git_root, ["rev-parse", "HEAD"]).strip() or None
+        porcelain = self._run_git(git_root, ["status", "--porcelain"]).strip()
+        return {
+            "repo": repo,
+            "is_git": True,
+            "branch": branch,
+            "head": head,
+            "working_tree": "dirty" if porcelain else "clean",
+        }
+
+    def repository_states(self, repos: Iterable[str] | None = None) -> list[dict[str, object]]:
+        names = list(dict.fromkeys(repos or self.source_names()))
+        states: list[dict[str, object]] = []
+        for repo in names:
+            if repo not in self.roots():
+                continue
+            states.append(self.repository_state(repo))
+        return states
+
     def git_status(self, repo: str) -> list[SearchHit]:
         root = self._git_root(repo)
         text = self._run_git(root, ["status", "--short", "--branch"])

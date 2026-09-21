@@ -141,3 +141,27 @@ select.input { appearance: auto; }
   padding: 5px 8px;
   font-size: 0.78rem;
 }
+
+
+.inline-approvals {
+  margin: 18px 0 26px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+.inline-approvals-title {
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .08em;
+  margin-bottom: 10px;
+}
+
+/* v0.7.6 performance: let Chrome skip layout/paint for off-screen historical messages. */
+.message {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 180px;
+}
+.streaming-message .message-body {
+  white-space: pre-wrap;
+}

@@ -79,7 +79,7 @@ class CoreTests(unittest.TestCase):
     def test_change_gate_persists_explicit_approval_scope(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            repo = self._git_repo(root)
+            repo = CoreTests._git_repo(root)
             patch_path = self._patch(root)
             store = ConversationStore(root / ".assistant/conversations")
             conv = store.create("Scoped approval")
@@ -422,7 +422,7 @@ class WebFoundationTests(unittest.TestCase):
     def test_api_app_imports_without_initialising_rag(self):
         from project_assistant.api.app import app
 
-        self.assertEqual(app.version, "0.7.4")
+        self.assertEqual(app.version, "0.7.7")
 
     def test_portkey_url_is_explicit_and_does_not_default_public(self):
         from project_assistant.config import PortkeySettings
@@ -899,7 +899,8 @@ class RetrievalFailureTests(unittest.TestCase):
         fake_chroma.Chroma = object
         fake_docs = types.ModuleType("langchain_core.documents")
         fake_docs.Document = object
-        with patch.dict(sys.modules, {"langchain_chroma": fake_chroma, "langchain_core.documents": fake_docs}):
+        fake_fitz = types.ModuleType("fitz")
+        with patch.dict(sys.modules, {"langchain_chroma": fake_chroma, "langchain_core.documents": fake_docs, "fitz": fake_fitz}):
             from project_assistant.indexing import IncrementalIndexer
         from project_assistant.retrieval_types import SearchHit
 
@@ -1042,3 +1043,92 @@ class MultiRoundRetrievalTests(unittest.TestCase):
         self.assertEqual([action.round_no for action in result.actions], [1, 2])
         self.assertTrue(getattr(model, "assert_source_visible", False))
         self.assertEqual(len(result.hits), 2)
+
+class GitStateRefreshTests(unittest.TestCase):
+    def test_manifest_git_metadata_refreshes_after_plain_folder_becomes_repo(self):
+        import sys
+        import types
+        fake_chroma = types.ModuleType("langchain_chroma")
+        fake_chroma.Chroma = object
+        fake_docs = types.ModuleType("langchain_core.documents")
+        fake_docs.Document = object
+        with patch.dict(sys.modules, {"langchain_chroma": fake_chroma, "langchain_core.documents": fake_docs}):
+            from project_assistant.indexing import IncrementalIndexer
+        from project_assistant.config import SourceRoot
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "legacy-source"
+            source.mkdir()
+            (source / "main.txt").write_text("hello\n", encoding="utf-8")
+
+            indexer = object.__new__(IncrementalIndexer)
+            indexer._git_cache = {}
+            record = {"git_branch": None, "git_commit": None}
+            source_root = SourceRoot("legacy", str(source))
+            self.assertFalse(indexer._refresh_record_git_metadata(source_root, record))
+
+            subprocess.run(["git", "init", "-q", str(source)], check=True)
+            subprocess.run(["git", "-C", str(source), "config", "user.email", "test@example.invalid"], check=True)
+            subprocess.run(["git", "-C", str(source), "config", "user.name", "Project Assistant Tests"], check=True)
+            subprocess.run(["git", "-C", str(source), "add", "main.txt"], check=True)
+            subprocess.run(["git", "-C", str(source), "commit", "-qm", "initial"], check=True)
+            indexer._git_cache.clear()
+
+            self.assertTrue(indexer._refresh_record_git_metadata(source_root, record))
+            self.assertTrue(record["git_commit"])
+            self.assertEqual(record["git_commit"], subprocess.run(
+                ["git", "-C", str(source), "rev-parse", "HEAD"], check=True, capture_output=True, text=True
+            ).stdout.strip())
+
+    def test_repository_state_marks_plain_folder_not_applicable_and_git_repo_verified(self):
+        from project_assistant.config import ProjectConfig, SourceRoot
+        from project_assistant.source_access import RegisteredSourceAccess
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            project = root / "assistant-project"; project.mkdir()
+            plain = root / "plain"; plain.mkdir()
+            repo = CoreTests._git_repo(root)
+            config = ProjectConfig(name="x", source_roots=[SourceRoot("plain", str(plain)), SourceRoot("repo", str(repo))])
+            access = RegisteredSourceAccess(project, config)
+
+            plain_state = access.repository_state("plain")
+            repo_state = access.repository_state("repo")
+            self.assertFalse(plain_state["is_git"])
+            self.assertEqual(plain_state["working_tree"], "not-applicable")
+            self.assertTrue(repo_state["is_git"])
+            self.assertTrue(repo_state["head"])
+            self.assertEqual(repo_state["working_tree"], "clean")
+
+class ProposalGitVerificationTests(unittest.TestCase):
+    def test_change_proposal_git_snapshot_uses_live_registered_repo_state(self):
+        import sys
+        import types
+        from types import SimpleNamespace
+        fake_chroma = types.ModuleType("langchain_chroma")
+        fake_chroma.Chroma = object
+        fake_docs = types.ModuleType("langchain_core.documents")
+        fake_docs.Document = object
+        fake_fitz = types.ModuleType("fitz")
+        with patch.dict(sys.modules, {"langchain_chroma": fake_chroma, "langchain_core.documents": fake_docs, "fitz": fake_fitz}):
+            from project_assistant.assistant import ProjectAssistant
+        from project_assistant.config import ProjectConfig, SourceRoot
+        from project_assistant.retrieval_types import SearchHit
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            project = root / "assistant-project"; project.mkdir()
+            repo = CoreTests._git_repo(root)
+            assistant = object.__new__(ProjectAssistant)
+            assistant.project_dir = project
+            assistant.config = ProjectConfig(name="x", source_roots=[SourceRoot("repo", str(repo))])
+            context = SimpleNamespace(
+                retrieved_hits=(SearchHit("code", {"repo": "repo"}, 1.0, ("live-read",)),),
+                routed_repos=(),
+            )
+            snapshot = assistant._live_git_state_for_context(context)
+            head = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"], check=True, capture_output=True, text=True).stdout.strip()
+            self.assertIn("repo: branch=", snapshot)
+            self.assertIn(f"HEAD={head}", snapshot)
+            self.assertIn("working_tree=clean", snapshot)

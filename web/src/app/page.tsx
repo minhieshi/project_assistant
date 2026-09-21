@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { FormEvent, memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, streamChat } from "@/lib/api";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -32,8 +32,6 @@ export default function Home() {
   const [proposals, setProposals] = useState<Proposal[]>([]);
   const [context, setContext] = useState<ContextSummary | null>(null);
   const [tab, setTab] = useState<"chat" | "project">("chat");
-  const [message, setMessage] = useState("");
-  const [mode, setMode] = useState<"chat" | "propose">("chat");
   const [streamingText, setStreamingText] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -104,8 +102,16 @@ export default function Home() {
   }, [projectId, conversationId, loadConversation]);
 
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [conversation?.entries.length, streamingText]);
+    bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+  }, [conversation?.entries.length, proposals.length]);
+
+  useEffect(() => {
+    if (!streamingText) return;
+    const frame = window.requestAnimationFrame(() => {
+      bottomRef.current?.scrollIntoView({ behavior: "auto", block: "end" });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [streamingText]);
 
   async function createProject(event: FormEvent) {
     event.preventDefault();
@@ -145,30 +151,48 @@ export default function Home() {
     } catch (e) { setError(String(e)); } finally { setBusy(false); }
   }
 
-  async function send() {
-    const text = message.trim();
+  const send = useCallback(async (textValue: string, sendMode: "chat" | "propose") => {
+    const text = textValue.trim();
     if (!projectId || !conversationId || !text || busy) return;
-    setBusy(true); setError(""); setMessage(""); setStreamingText("");
+    setBusy(true); setError(""); setStreamingText("");
     const optimistic: ConversationEntry = { title: "User", timestamp: new Date().toISOString(), body: text, role: "user" };
     setConversation((current) => current ? { ...current, entries: [...current.entries, optimistic] } : current);
+
+    let pendingDelta = "";
+    let flushTimer: number | null = null;
+    const flushStreaming = () => {
+      flushTimer = null;
+      if (!pendingDelta) return;
+      const chunk = pendingDelta;
+      pendingDelta = "";
+      setStreamingText((current) => current + chunk);
+    };
+
     try {
-      if (mode === "propose") {
+      if (sendMode === "propose") {
         await api.propose(projectId, conversationId, text);
         await loadConversation(projectId, conversationId);
       } else {
         await streamChat(projectId, conversationId, text, {
           onContext: (value) => setContext(value),
-          onDelta: (delta) => setStreamingText((current) => current + delta),
+          onDelta: (delta) => {
+            pendingDelta += delta;
+            if (flushTimer === null) flushTimer = window.setTimeout(flushStreaming, 50);
+          },
         });
-        setStreamingText("");
+        if (flushTimer !== null) window.clearTimeout(flushTimer);
+        flushStreaming();
         await loadConversation(projectId, conversationId);
+        setStreamingText("");
       }
       await loadConversations(projectId);
     } catch (e) {
+      if (flushTimer !== null) window.clearTimeout(flushTimer);
+      flushStreaming();
       setError(String(e));
       await loadConversation(projectId, conversationId).catch(() => undefined);
     } finally { setBusy(false); }
-  }
+  }, [busy, conversationId, loadConversation, loadConversations, projectId]);
 
 
   async function addSource(event: FormEvent) {
@@ -270,7 +294,7 @@ export default function Home() {
   return (
     <div className="app-shell">
       <aside className="sidebar">
-        <div className="brand">Project Assistant <span className="small">v0.7.4</span></div>
+        <div className="brand">Project Assistant <span className="small">v0.7.7</span></div>
         {appStatus && <div className="notice" style={{ marginBottom: 12 }}>Projects: {appStatus.projects_root}<br />Portkey: {appStatus.portkey.base_url_configured ? "URL configured" : "URL missing"}</div>}
 
         <div className="section-title">Projects</div>
@@ -323,27 +347,19 @@ export default function Home() {
             <section className="chat-scroll">
               {!conversation ? <div className="empty">{projectId ? "Create or select a conversation." : "Register a local project to begin."}</div> : <>
                 {conversation.entries.map((entry, index) => <Message key={`${entry.timestamp}-${index}`} entry={entry} />)}
-                {streamingText && <Message entry={{ title: "Assistant", timestamp: "", body: streamingText, role: "assistant" }} />}
+                {streamingText && <StreamingMessage text={streamingText} />}
+                {proposals.filter((proposal) => !["rejected", "applied"].includes(proposal.status)).length > 0 && (
+                  <div className="inline-approvals">
+                    <div className="inline-approvals-title">Pending change approval</div>
+                    {proposals.filter((proposal) => !["rejected", "applied"].includes(proposal.status)).map((proposal) => (
+                      <ProposalCard key={`inline-${proposal.id}`} proposal={proposal} projectId={projectId} busy={busy} onAction={proposalAction} onApplied={async () => { if (conversationId) await loadConversation(projectId, conversationId); }} />
+                    ))}
+                  </div>
+                )}
                 <div ref={bottomRef} />
               </>}
             </section>
-            {conversation && <div className="composer">
-              <div className="composer-box">
-                <textarea className="textarea" value={message} onChange={(e) => setMessage(e.target.value)} onKeyDown={(e) => {
-                  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void send(); }
-                }} placeholder={mode === "propose" ? "Describe the code/configuration change. It will be written as a proposal only." : "Ask about this project..."} />
-                <div className="composer-actions">
-                  <div className="row wrap">
-                    <div className="mode">
-                      <button className={mode === "chat" ? "active" : ""} onClick={() => setMode("chat")}>Chat</button>
-                      <button className={mode === "propose" ? "active" : ""} onClick={() => setMode("propose")}>Propose change</button>
-                    </div>
-                  </div>
-                  <button className="btn primary" onClick={() => void send()} disabled={busy || !message.trim()}>{busy ? "Working…" : mode === "propose" ? "Write proposal" : "Send"}</button>
-                  <span className="small">Tip: macOS Dictation works directly in the message box using your configured Dictation shortcut.</span>
-                </div>
-              </div>
-            </div>}
+            {conversation && <Composer busy={busy} onSend={send} />}
           </>
         ) : (
           <ProjectPanel
@@ -388,7 +404,7 @@ export default function Home() {
   );
 }
 
-function Message({ entry }: { entry: ConversationEntry }) {
+const Message = memo(function Message({ entry }: { entry: ConversationEntry }) {
   const role = entry.role === "event" ? "event" : entry.role;
   const markdown = entry.role !== "user";
   return <div className={`message ${role}`}>
@@ -404,7 +420,50 @@ function Message({ entry }: { entry: ConversationEntry }) {
       </div>
     ) : <div className="message-body">{entry.body}</div>}
   </div>;
+});
+
+function StreamingMessage({ text }: { text: string }) {
+  return <div className="message assistant streaming-message">
+    <div className="message-label">Assistant · responding</div>
+    <div className="message-body">{text}</div>
+  </div>;
 }
+
+const Composer = memo(function Composer({ busy, onSend }: { busy: boolean; onSend: (text: string, mode: "chat" | "propose") => Promise<void> }) {
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const [mode, setMode] = useState<"chat" | "propose">("chat");
+
+  function submit() {
+    const textarea = textareaRef.current;
+    const text = textarea?.value.trim() ?? "";
+    if (!textarea || !text || busy) return;
+    textarea.value = "";
+    void onSend(text, mode);
+  }
+
+  return <div className="composer">
+    <div className="composer-box">
+      <textarea
+        ref={textareaRef}
+        className="textarea"
+        onKeyDown={(event) => {
+          if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); submit(); }
+        }}
+        placeholder={mode === "propose" ? "Describe the code/configuration change. It will be written as a proposal only." : "Ask about this project..."}
+      />
+      <div className="composer-actions">
+        <div className="row wrap">
+          <div className="mode">
+            <button type="button" className={mode === "chat" ? "active" : ""} onClick={() => setMode("chat")}>Chat</button>
+            <button type="button" className={mode === "propose" ? "active" : ""} onClick={() => setMode("propose")}>Propose change</button>
+          </div>
+        </div>
+        <button type="button" className="btn primary" onClick={submit} disabled={busy}>{busy ? "Working…" : mode === "propose" ? "Write proposal" : "Send"}</button>
+        <span className="small">Tip: macOS Dictation works directly in the message box using your configured Dictation shortcut.</span>
+      </div>
+    </div>
+  </div>;
+});
 
 function ProjectPanel(props: {
   project: Project | null;
@@ -528,7 +587,9 @@ function IndexVisibility({ status }: { status: IndexStatus | null }) {
   </div>;
 }
 
-function ContextPanel({ context }: { context: ContextSummary | null }) {
+const ContextPanel = memo(function ContextPanel({ context }: { context: ContextSummary | null }) {
+  const [showCompiled, setShowCompiled] = useState(false);
+  useEffect(() => setShowCompiled(false), [context?.debug_path, context?.estimated_tokens]);
   if (!context) return <div className="notice">Context used by the most recent chat will appear here, or compile one manually.</div>;
   return <>
     <div className="card" style={{ marginTop: 12 }}>
@@ -541,9 +602,14 @@ function ContextPanel({ context }: { context: ContextSummary | null }) {
     {context.retrieval_warnings?.length > 0 && <div className="card"><h3>Retrieval warnings</h3><ul className="context-list">{context.retrieval_warnings.map((warning, idx) => <li key={`${idx}-${warning}`}>{warning}</li>)}</ul></div>}
     <div className="card"><h3>Retrieved source</h3><ul className="context-list">{context.rag_sources.slice(0, 30).map((source) => <li key={source}>{source}</li>)}</ul></div>
     {context.graph_sources.length > 0 && <div className="card"><h3>Graph sources</h3><ul className="context-list">{context.graph_sources.slice(0, 20).map((source) => <li key={source}>{source}</li>)}</ul></div>}
-    {context.text && <div className="card"><h3>Compiled context</h3><div className="context-text">{context.text}</div>{context.debug_path && <div className="path" style={{ marginTop: 8 }}>{context.debug_path}</div>}</div>}
+    {context.text && <div className="card">
+      <div className="row" style={{ justifyContent: "space-between" }}><h3>Compiled context</h3><button type="button" className="btn compact" onClick={() => setShowCompiled((value) => !value)}>{showCompiled ? "Hide" : "Show"}</button></div>
+      <div className="small">{context.text.length.toLocaleString("en-AU")} characters · collapsed by default for UI performance</div>
+      {showCompiled && <div className="context-text" style={{ marginTop: 8 }}>{context.text}</div>}
+      {context.debug_path && <div className="path" style={{ marginTop: 8 }}>{context.debug_path}</div>}
+    </div>}
   </>;
-}
+});
 
 function approvalItemsFromPlan(plan: string): string[] {
   const seen = new Set<string>();

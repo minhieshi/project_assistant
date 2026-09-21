@@ -44,6 +44,10 @@ class IncrementalIndexer:
         self._git_cache: dict[str, dict[str, str | None]] = {}
 
     def index_changed(self) -> dict[str, int]:
+        # Git state can change independently of file contents (for example a source
+        # folder may be git-init'd after it was first indexed). Never reuse Git
+        # metadata across indexing runs.
+        self._git_cache.clear()
         self.status_store.start()
         manifest = self._load_manifest()
         current: dict[str, tuple[SourceRoot, Path]] = {}
@@ -84,11 +88,18 @@ class IncrementalIndexer:
                     and record.get("fingerprint") == fingerprint
                     and record.get("index_policy_version") == INDEX_POLICY_VERSION
                 ):
+                    # Repository state is independent of file content. Refresh
+                    # branch/HEAD metadata even when the file itself is unchanged,
+                    # without re-embedding the source. This handles directories that
+                    # become Git repos after their initial index and normal HEAD moves.
+                    record_changed = self._refresh_record_git_metadata(source, record)
                     # Graph parser upgrades are local-only. Refresh structural
                     # relationships without re-embedding unchanged source files.
                     if record.get("graph_index_version") != GRAPH_INDEX_VERSION:
                         self._refresh_graph(source, path)
                         record["graph_index_version"] = GRAPH_INDEX_VERSION
+                        record_changed = True
+                    if record_changed:
                         manifest[source_path] = record
                         self._save_manifest(manifest)
                     unchanged += 1
@@ -134,6 +145,7 @@ class IncrementalIndexer:
             raise
 
     def index_specific_file(self, path: Path) -> None:
+        self._git_cache.clear()
         path = path.resolve()
         source = self._source_for(path)
         if source is None:
@@ -148,9 +160,12 @@ class IncrementalIndexer:
         fingerprint = self._fingerprint(path)
         existing = manifest.get(key, {})
         if existing.get("fingerprint") == fingerprint and existing.get("index_policy_version") == INDEX_POLICY_VERSION:
+            record_changed = self._refresh_record_git_metadata(source, existing)
             if existing.get("graph_index_version") != GRAPH_INDEX_VERSION:
                 self._refresh_graph(source, path)
                 existing["graph_index_version"] = GRAPH_INDEX_VERSION
+                record_changed = True
+            if record_changed:
                 manifest[key] = existing
                 self._save_manifest(manifest)
             return
@@ -335,6 +350,23 @@ class IncrementalIndexer:
             "egress_advisory": advisory_findings,
             "embedding_error": embedding_error,
         }
+
+
+    def _refresh_record_git_metadata(self, source: SourceRoot, record: dict) -> bool:
+        """Refresh manifest Git metadata without touching embeddings.
+
+        A source root can become a Git repository after its first index, and HEAD can
+        move while all tracked file contents remain unchanged. Persist live repo state
+        separately from content fingerprints so reindexing does not require a remote
+        embedding call just to verify branch/commit metadata.
+        """
+        git = self._git_metadata(Path(source.path)) if source.name != "project" else {"branch": None, "commit": None}
+        branch = git.get("branch")
+        commit = git.get("commit")
+        changed = record.get("git_branch") != branch or record.get("git_commit") != commit
+        record["git_branch"] = branch
+        record["git_commit"] = commit
+        return changed
 
     def _refresh_graph(self, source: SourceRoot, path: Path) -> None:
         if path.suffix.lower() == ".pdf":
