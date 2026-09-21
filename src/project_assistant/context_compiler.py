@@ -25,6 +25,7 @@ class RetrievalSeed:
     graph_hits: tuple[GraphHit, ...]
     direct_hits: tuple[SearchHit, ...]
     initial_hits: tuple[SearchHit, ...]
+    warnings: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -36,6 +37,7 @@ class CompiledContext:
     routed_repos: tuple[str, ...] = ()
     retrieval_queries: tuple[str, ...] = ()
     retrieval_actions: tuple[str, ...] = ()
+    retrieval_warnings: tuple[str, ...] = ()
     retrieved_hits: tuple[SearchHit, ...] = ()
 
 
@@ -71,11 +73,20 @@ class ContextCompiler:
 
         per_query_vector = max(10, self.config.vector_top_k // 2)
         per_query_lexical = max(16, self.config.lexical_top_k // 2)
+        warnings: list[str] = []
         for query_index, retrieval_query in enumerate(queries):
-            # Semantic embedding calls are the expensive/remote part. Use them for
-            # the user's own wording and at most two contextual reformulations;
-            # exact/error/path expansions remain entirely local.
-            vector = self.indexer.vector_search(retrieval_query, k=per_query_vector) if query_index < 3 else []
+            # Semantic embedding calls are useful but not authoritative. A transient
+            # gateway/provider failure must never prevent local FTS/exact/graph
+            # retrieval from answering the user's question. Keep remote semantic
+            # inputs bounded as error logs can be very large.
+            vector: list[SearchHit] = []
+            if query_index < 3:
+                semantic_query = self._semantic_query(retrieval_query)
+                if semantic_query:
+                    try:
+                        vector = self.indexer.vector_search(semantic_query, k=per_query_vector)
+                    except Exception as exc:
+                        warnings.append(self._retrieval_warning(exc))
             lexical = self.indexer.lexical_search(retrieval_query, k=per_query_lexical)
             exact = self.indexer.exact_search(retrieval_query, k=14)
             vector_all.extend(vector)
@@ -91,7 +102,7 @@ class ContextCompiler:
         )
         direct = self._rank_across_queries(query_rankings, routes)
         initial = self._expand_hits(direct, graph_hits, limit=max(28, self.config.rag_top_n * 2))
-        return RetrievalSeed(tuple(queries), tuple(routes), tuple(graph_hits), tuple(direct), tuple(initial))
+        return RetrievalSeed(tuple(queries), tuple(routes), tuple(graph_hits), tuple(direct), tuple(initial), tuple(dict.fromkeys(warnings)))
 
     def compile(
         self,
@@ -141,8 +152,35 @@ class ContextCompiler:
             routed_repos=tuple(route.name for route in seed.routes),
             retrieval_queries=seed.queries,
             retrieval_actions=action_labels,
+            retrieval_warnings=seed.warnings,
             retrieved_hits=tuple(rag_hits),
         )
+
+
+    @staticmethod
+    def _semantic_query(text: str, max_chars: int = 6000) -> str:
+        """Return a bounded, provider-friendly semantic query.
+
+        Error dumps and pasted logs can be far larger than a useful embedding query.
+        Local lexical/exact retrieval still sees the original text; semantic retrieval
+        gets a bounded front/tail representation plus whitespace normalisation.
+        """
+        cleaned = text.replace("\x00", " ").strip()
+        if not cleaned:
+            return ""
+        if len(cleaned) <= max_chars:
+            return cleaned
+        head = max_chars * 2 // 3
+        tail = max_chars - head
+        return cleaned[:head] + "\n... [semantic query truncated] ...\n" + cleaned[-tail:]
+
+    @staticmethod
+    def _retrieval_warning(exc: Exception) -> str:
+        message = re.sub(r"<[^>]+>", " ", str(exc))
+        message = re.sub(r"\s+", " ", message).strip()
+        if len(message) > 300:
+            message = message[:297] + "..."
+        return f"Semantic retrieval unavailable for one query; local lexical/exact/graph retrieval continued ({message})"
 
     def build_queries(self, query: str, conversation_id: str | None = None) -> list[str]:
         """Build retrieval queries from the current turn plus recent user context."""
@@ -192,10 +230,11 @@ class ContextCompiler:
         routed = ", ".join(compiled.routed_repos) or "none"
         queries = "\n".join(f"- {q}" for q in compiled.retrieval_queries) or "- none"
         actions = "\n".join(f"- {a}" for a in compiled.retrieval_actions) or "- none"
+        warnings = "\n".join(f"- {w}" for w in compiled.retrieval_warnings) or "- none"
         path.write_text(
             f"# Compiled context\n\nEstimated tokens: {compiled.estimated_tokens}\n\n"
             f"Routed repositories: {routed}\n\n## Retrieval queries\n{queries}\n\n"
-            f"## Agent retrieval actions\n{actions}\n\n{compiled.text}\n",
+            f"## Agent retrieval actions\n{actions}\n\n## Retrieval warnings\n{warnings}\n\n{compiled.text}\n",
             encoding="utf-8",
         )
         private_file(path)

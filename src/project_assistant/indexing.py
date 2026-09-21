@@ -189,7 +189,12 @@ class IncrementalIndexer:
     def search(self, query: str, k: int | None = None, repos: set[str] | None = None) -> list[SearchHit]:
         """Hybrid vector + lexical + exact retrieval using reciprocal-rank fusion."""
         k = k or self.config.rag_top_n
-        vector = self.vector_search(query, k=max(self.config.vector_top_k, k * 2), repos=repos)
+        try:
+            vector = self.vector_search(query, k=max(self.config.vector_top_k, k * 2), repos=repos)
+        except Exception:
+            # Semantic search is an enhancement. The already-persisted local FTS
+            # and exact indexes must remain usable if Portkey/Bedrock is unavailable.
+            vector = []
         lexical = self.lexical_search(query, k=max(24, k * 3), repos=repos)
         exact = self.exact_search(query, k=max(12, k * 2), repos=repos)
         return self.fuse(vector, lexical, exact, limit=k)

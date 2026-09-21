@@ -1,4 +1,4 @@
-# Local Project Assistant — v0.6.7.4
+# Local Project Assistant — v0.7.0
 
 A local-first engineering workbench for source-heavy enterprise work: persistent Markdown conversations, multi-repo RAG, deterministic knowledge graph, context compilation and two-stage approval-gated code changes.
 
@@ -26,6 +26,45 @@ Approved Portkey gateway
 ```
 
 The CLI remains available and uses the same project state.
+
+## Retrieval 2.0 (v0.7)
+
+Normal chat now performs iterative project retrieval automatically; you do not need to press **Compile context** first. The pipeline is:
+
+```text
+current question + recent conversation
+        ↓
+conversation-aware query expansion
+        ↓
+local exact / FTS / knowledge graph
++ bounded Portkey vector searches
+        ↓
+repo routing (boost only; never hard exclusion)
+        ↓
+initial coherent source map
+        ↓
+GPT-5.6 retrieval planner
+        ↓
+read-only local tools
+  search_project / search_exact
+  find_symbol / find_references
+  read_file / read_file_range
+        ↓
+adjacent + dependency + same-file expansion
+        ↓
+final ~30 high-signal source chunks
+        ↓
+GPT-5.6 final answer
+```
+
+The retrieval planner cannot execute shell commands or modify files. Its tools operate only over content already registered/indexed by Project Assistant. `RETRIEVAL_AGENT_ENABLED=0` disables the planning pass if you need to compare behaviour or reduce latency. `CONTEXT_MAX_TOKENS` defaults to `48000`.
+
+The context inspector now shows the actual retrieval query variants and any planner-requested read-only operations, in addition to routed repos and source chunks. Repository routing is advisory: a strong hit from a lower-ranked repo can still enter context.
+
+### Upgrading an already-indexed project
+
+You **do not need to re-embed the repositories** for Retrieval 2.0. Run **Reindex changed files** once after upgrading. v0.7 has a separate graph-parser version, so unchanged text/code keeps its existing Chroma vectors while the local knowledge graph is refreshed. This adds Java classes, methods, imports and approximate call relationships to graph expansion without paying the embedding cost again.
+
 
 ## Security model added in v0.4
 
@@ -155,13 +194,14 @@ Code chunks retain repo/path/language/symbol/line metadata. Git-backed repos use
 - npm
 - Git
 - an enterprise-approved Portkey route exposing GPT-5.6 and an embedding model
+- optional for in-app dictation: a local `whisper.cpp` `whisper-cli` executable plus a local GGML Whisper model file
 
 ## Install
 
 Backend:
 
 ```bash
-cd project-assistant-v0.6.7.4
+cd project-assistant-v0.7
 python -m venv .venv
 source .venv/bin/activate
 pip install -e .
@@ -221,6 +261,24 @@ Only after that succeeds should you run the initial repository index.
 v0.6.7 classifies Git-tracked files before parsing/embedding. Archives (`.jar`, `.war`, `.zip`, etc.), compiled artefacts (`.class`, native binaries), sensitive paths, unsupported formats, binary content, oversized text/PDFs, large generated source files, and minified/extreme-long-line payloads are skipped automatically instead of being sent to Portkey. Ordinary source code is still structurally chunked, and every final chunk is hard-bounded even when a single source line is enormous.
 
 The latest run is persisted to `.assistant/index_status.json` and shown in **Project → Index visibility** with per-repo scanned/indexed/unchanged/skipped/local-only/chunk counts, skip reasons, the current file during an active run, and recent skipped files. If Portkey rejects one otherwise eligible file, it is retained in local FTS/knowledge-graph retrieval as `embedding-rejected` and indexing continues.
+
+### Markdown rendering
+
+Assistant responses are rendered as GitHub-flavoured Markdown in the web UI. Fenced blocks such as ` ```sh ` / ` ```bash ` render as real code blocks rather than plain wrapped text. The renderer uses `react-markdown` + `remark-gfm`; raw HTML is not enabled. After upgrading from an earlier build, run `npm install` once so the two frontend dependencies are installed.
+
+### Optional local dictation
+
+Dictation is deliberately local-only. The browser captures microphone samples and encodes a mono 16 kHz PCM WAV locally; the WAV is proxied to the loopback FastAPI service and passed to a locally installed `whisper.cpp` CLI. The transcript is inserted into the composer **but is not sent automatically**, so it can be reviewed/edited first. Temporary audio/transcript files are deleted after each transcription.
+
+Configure a local executable and model before starting the API:
+
+```bash
+export PROJECT_ASSISTANT_WHISPER_BIN='/absolute/path/to/whisper-cli'
+export PROJECT_ASSISTANT_WHISPER_MODEL='/absolute/path/to/ggml-base.en.bin'
+export PROJECT_ASSISTANT_WHISPER_LANGUAGE='en'
+```
+
+If `whisper-cli` is already on `PATH`, `PROJECT_ASSISTANT_WHISPER_BIN` can be omitted. Project Assistant does not download a Whisper model and does not call a browser/cloud speech-recognition service. The UI status shows `Dictation: local Whisper ready` when both the binary and model are available.
 
 Frontend:
 
@@ -415,8 +473,13 @@ project-assistant project-convert-to-source <mistaken-project-id> <target-projec
 project-assistant project-forget <imported-project-id>
 ```
 
-### Balanced credential handling (v0.6.7.4)
+### Balanced credential handling (v0.6.7.5)
 
 Project Assistant now distinguishes **real/high-confidence secrets** from ordinary enterprise credential references. Files such as `.env`, private-key/certificate files and credential-sensitive directories are still excluded. Recognisable private keys and token formats still block remote egress. Ordinary source references such as vault paths, `*_PASSWORD_REFERENCE`, `secret_name`, `api_key` identifiers and environment-variable references no longer prevent embedding or chat.
 
 If a source contains a high-confidence secret it can remain in the local lexical/graph indexes, but its chunks are tagged as non-egress and are excluded from compiled GPT context.
+
+
+### Retrieval failure behaviour
+
+Semantic/vector retrieval is an enhancement, not a hard dependency for chat. If the Portkey/Bedrock embedding endpoint returns a transient or content-specific error while compiling context, Project Assistant continues with the persisted local FTS/exact index and knowledge graph. The Context inspector will show a retrieval warning. Raw HTML gateway error pages are not surfaced to the chat UI.

@@ -1,0 +1,6 @@
+fastapi>=0.115.0
+uvicorn>=0.34.0
+langchain-chroma>=0.2.0
+langchain-core>=0.3.0
+portkey-ai==2.3.4
+pymupdf>=1.24.0

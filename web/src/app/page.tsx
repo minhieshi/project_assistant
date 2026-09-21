@@ -585,6 +585,7 @@ function ContextPanel({ context }: { context: ContextSummary | null }) {
     </div>
     {context.retrieval_queries?.length > 0 && <div className="card"><h3>Retrieval queries</h3><ul className="context-list">{context.retrieval_queries.slice(0, 10).map((query, idx) => <li key={`${idx}-${query}`}>{query}</li>)}</ul></div>}
     {context.retrieval_actions?.length > 0 && <div className="card"><h3>Agent retrieval</h3><ul className="context-list">{context.retrieval_actions.map((action, idx) => <li key={`${idx}-${action}`}>{action}</li>)}</ul></div>}
+    {context.retrieval_warnings?.length > 0 && <div className="card"><h3>Retrieval warnings</h3><ul className="context-list">{context.retrieval_warnings.map((warning, idx) => <li key={`${idx}-${warning}`}>{warning}</li>)}</ul></div>}
     <div className="card"><h3>Retrieved source</h3><ul className="context-list">{context.rag_sources.slice(0, 30).map((source) => <li key={source}>{source}</li>)}</ul></div>
     {context.graph_sources.length > 0 && <div className="card"><h3>Graph sources</h3><ul className="context-list">{context.graph_sources.slice(0, 20).map((source) => <li key={source}>{source}</li>)}</ul></div>}
     {context.text && <div className="card"><h3>Compiled context</h3><div className="context-text">{context.text}</div>{context.debug_path && <div className="path" style={{ marginTop: 8 }}>{context.debug_path}</div>}</div>}

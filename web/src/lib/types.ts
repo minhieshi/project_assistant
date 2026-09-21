@@ -61,6 +61,7 @@ export type ContextSummary = {
   graph_sources: string[];
   retrieval_queries: string[];
   retrieval_actions: string[];
+  retrieval_warnings?: string[];
   text?: string;
   debug_path?: string;
 };

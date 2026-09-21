@@ -398,7 +398,7 @@ class WebFoundationTests(unittest.TestCase):
     def test_api_app_imports_without_initialising_rag(self):
         from project_assistant.api.app import app
 
-        self.assertEqual(app.version, "0.6.7")
+        self.assertEqual(app.version, "0.7.1")
 
     def test_portkey_url_is_explicit_and_does_not_default_public(self):
         from project_assistant.config import PortkeySettings
@@ -465,6 +465,41 @@ class IndexSafetyTests(unittest.TestCase):
             self.assertEqual(loaded.repos["repo-a"].skipped, 1)
 
 
+
+
+
+class PlannerFailureTests(unittest.TestCase):
+    def test_compile_context_survives_retrieval_planner_failure(self):
+        import sys
+        import types
+        fake_chroma = types.ModuleType("langchain_chroma")
+        fake_chroma.Chroma = object
+        fake_docs = types.ModuleType("langchain_core.documents")
+        fake_docs.Document = object
+        with patch.dict(sys.modules, {"langchain_chroma": fake_chroma, "langchain_core.documents": fake_docs}):
+            from project_assistant.assistant import ProjectAssistant
+        from project_assistant.context_compiler import CompiledContext, RetrievalSeed
+
+        seed = RetrievalSeed((), (), (), (), ())
+        class Compiler:
+            def initial_retrieval(self, query, conversation_id=None):
+                return seed
+            def compile(self, *args, **kwargs):
+                return CompiledContext("local context", 3, (), ())
+        class Conversations:
+            def recent_text(self, *args, **kwargs):
+                return "recent"
+        class BrokenAgent:
+            def plan_and_retrieve(self, *args, **kwargs):
+                raise RuntimeError("planner unavailable")
+
+        assistant = object.__new__(ProjectAssistant)
+        assistant.compiler = Compiler()
+        assistant.conversations = Conversations()
+        assistant.retrieval_agent = BrokenAgent()
+        with patch.dict(os.environ, {"RETRIEVAL_AGENT_ENABLED": "1"}, clear=False):
+            compiled = assistant.compile_context("question", "c1", agentic=True)
+        self.assertEqual(compiled.text, "local context")
 
 class TitanEmbeddingTests(unittest.TestCase):
     def test_embedding_adapter_exactly_matches_known_good_curl_shape(self):
@@ -643,3 +678,253 @@ def test_non_git_directory_skip_policy():
         assert should_skip_dir(name)
     for name in ("src", "docs", "roles", "playbooks"):
         assert not should_skip_dir(name)
+
+
+class DictationTests(unittest.TestCase):
+    @staticmethod
+    def _wav() -> bytes:
+        # Minimal PCM WAV: mono, 16 kHz, 16-bit, one silent sample.
+        import struct
+        data = struct.pack("<h", 0)
+        return (
+            b"RIFF" + struct.pack("<I", 36 + len(data)) + b"WAVE"
+            + b"fmt " + struct.pack("<IHHIIHH", 16, 1, 1, 16000, 32000, 2, 16)
+            + b"data" + struct.pack("<I", len(data)) + data
+        )
+
+    def test_dictation_requires_local_binary_and_model(self):
+        from project_assistant.dictation import dictation_status
+        with patch.dict(os.environ, {
+            "PROJECT_ASSISTANT_WHISPER_BIN": "/definitely/missing/whisper-cli",
+            "PROJECT_ASSISTANT_WHISPER_MODEL": "/definitely/missing/model.bin",
+        }, clear=False):
+            status = dictation_status()
+            self.assertFalse(status.configured)
+
+    def test_local_dictation_uses_temp_wav_and_reads_text_output(self):
+        from types import SimpleNamespace
+        from project_assistant.dictation import transcribe_wav
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            binary = root / "whisper-cli"
+            model = root / "ggml-base.en.bin"
+            binary.write_text("stub", encoding="utf-8")
+            model.write_bytes(b"model")
+
+            def fake_run(command, **kwargs):
+                output_base = Path(command[command.index("-of") + 1])
+                output_base.with_suffix(".txt").write_text("hello from local whisper\n", encoding="utf-8")
+                self.assertEqual(Path(command[command.index("-m") + 1]), model.resolve())
+                self.assertEqual(Path(command[command.index("-f") + 1]).suffix, ".wav")
+                return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+            with patch.dict(os.environ, {
+                "PROJECT_ASSISTANT_WHISPER_BIN": str(binary),
+                "PROJECT_ASSISTANT_WHISPER_MODEL": str(model),
+                "PROJECT_ASSISTANT_WHISPER_LANGUAGE": "en",
+            }, clear=False), patch("project_assistant.dictation.subprocess.run", side_effect=fake_run):
+                self.assertEqual(transcribe_wav(self._wav()), "hello from local whisper")
+
+
+class RetrievalV2Tests(unittest.TestCase):
+    def test_context_queries_include_previous_user_turn_and_error_focus(self):
+        from project_assistant.config import ProjectConfig
+        from project_assistant.context_compiler import ContextCompiler
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            store = ConversationStore(root / "conversations")
+            conv = store.create("ANSWER failure")
+            store.append(conv.id, "user", "The provisioning playbook calls ANSWER and AssetLookup.java")
+            store.append(conv.id, "assistant", "Looking at it.")
+            store.append(conv.id, "user", "Now it fails with RC=8")
+            compiler = ContextCompiler(root, ProjectConfig(name="x"), None, store, None)  # type: ignore[arg-type]
+            queries = compiler.build_queries("Now it fails with RC=8", conv.id)
+            joined = "\n".join(queries)
+            self.assertIn("Previous user context", joined)
+            self.assertIn("RC=8", joined)
+            self.assertIn("AssetLookup.java", joined)
+            self.assertTrue(any("error handling" in query for query in queries))
+
+    def test_java_graph_extracts_classes_methods_imports_and_calls(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "AssetLookup.java"
+            source.write_text(
+                "package com.example.platform;\n"
+                "import com.example.shared.Client;\n"
+                "public class AssetLookup {\n"
+                "  public Result lookup(String id) {\n"
+                "    return fetchAsset(id);\n"
+                "  }\n"
+                "}\n",
+                encoding="utf-8",
+            )
+            graph = KnowledgeGraph(root / "graph.sqlite3")
+            graph.index_file("java-repo", root, source, source.read_text())
+            self.assertTrue(any(hit.name == "AssetLookup" and hit.node_type == "java_class" for hit in graph.search("AssetLookup")))
+            self.assertTrue(any(hit.name == "lookup" and hit.node_type == "java_method" for hit in graph.search("lookup")))
+            call_hits = graph.search("fetchAsset")
+            self.assertTrue(call_hits)
+            self.assertTrue(any("CALLS" in neighbour for hit in call_hits for neighbour in hit.neighbours))
+
+    def test_retrieval_planner_parses_read_only_actions_only(self):
+        from project_assistant.retrieval_agent import RetrievalAgent
+
+        raw = '''```json
+        {"actions":[
+          {"tool":"find_symbol","target":"AssetLookup"},
+          {"tool":"read_file","target":"roles/assets/tasks/main.yml","repo":"automation"},
+          {"tool":"run_shell","query":"rm -rf /"}
+        ]}
+        ```'''
+        actions = RetrievalAgent._parse_actions(raw)
+        self.assertEqual([a.tool for a in actions], ["find_symbol", "read_file"])
+        self.assertEqual(actions[1].repo, "automation")
+
+    def test_retrieval_agent_executes_at_most_two_semantic_searches(self):
+        from project_assistant.retrieval_types import SearchHit
+        from project_assistant.retrieval_agent import RetrievalAgent
+
+        class FakeModel:
+            def complete(self, system, user):
+                return json.dumps({"actions": [
+                    {"tool": "search_project", "query": "one"},
+                    {"tool": "search_project", "query": "two"},
+                    {"tool": "search_project", "query": "three"},
+                    {"tool": "search_exact", "query": "IKJEFT01"},
+                ]})
+
+        class FakeToolkit:
+            def __init__(self):
+                self.calls = []
+            def execute(self, action, limit=12):
+                self.calls.append(action.tool + ":" + (action.query or action.target))
+                return [SearchHit(action.query or action.target, {"id": self.calls[-1], "repo": "r", "relative_path": "x"}, 0.0, (action.tool,))]
+
+        toolkit = FakeToolkit()
+        agent = RetrievalAgent(FakeModel(), toolkit)  # type: ignore[arg-type]
+        result = agent.plan_and_retrieve("question", "recent", [], [])
+        self.assertEqual(sum(call.startswith("search_project:") for call in toolkit.calls), 2)
+        self.assertIn("search_exact:IKJEFT01", toolkit.calls)
+        self.assertEqual(len(result.actions), 3)
+
+class RetrievalCompilerV2Tests(unittest.TestCase):
+    def test_multi_query_semantic_search_is_capped_and_routing_does_not_exclude_other_repos(self):
+        from project_assistant.config import ProjectConfig
+        from project_assistant.context_compiler import ContextCompiler
+        from project_assistant.repo_catalog import RepoRoute
+        from project_assistant.retrieval_types import SearchHit
+
+        class FakeCatalog:
+            def route(self, *args, **kwargs):
+                return [RepoRoute("primary", 5.0, ("test",))]
+
+        class FakeIndexer:
+            def __init__(self):
+                self.vector_calls = 0
+                self.catalog = FakeCatalog()
+            def vector_search(self, query, k=10):
+                self.vector_calls += 1
+                repo = "secondary" if self.vector_calls == 1 else "primary"
+                return [SearchHit(query, {"id": f"v{self.vector_calls}", "repo": repo, "source": f"/{repo}.py", "relative_path": f"{repo}.py", "start_line": 1, "end_line": 2}, 0.0, ("vector",))]
+            def lexical_search(self, query, k=10):
+                return []
+            def exact_search(self, query, k=10):
+                return []
+            def fuse(self, vector, lexical, exact, limit):
+                return (vector + lexical + exact)[:limit]
+            def chunks_for_locations(self, locations, limit=20):
+                return []
+            def chunks_for_sources(self, paths, limit=20):
+                return []
+
+        class FakeGraph:
+            def search(self, query, limit=10):
+                return []
+            def related_locations(self, hits, limit=20):
+                return []
+
+        with tempfile.TemporaryDirectory() as tmp:
+            store = ConversationStore(Path(tmp) / "conversations")
+            conv = store.create("Cross repo")
+            store.append(conv.id, "user", "Earlier context mentions AssetLookup.java and RC=8 in the automation playbook")
+            store.append(conv.id, "assistant", "ok")
+            store.append(conv.id, "user", "Why is it failing now?")
+            fake = FakeIndexer()
+            compiler = ContextCompiler(Path(tmp), ProjectConfig(name="x"), fake, store, FakeGraph())  # type: ignore[arg-type]
+            seed = compiler.initial_retrieval("Why is it failing now?", conv.id)
+            self.assertLessEqual(fake.vector_calls, 3)
+            self.assertTrue(any(hit.metadata.get("repo") == "secondary" for hit in seed.direct_hits))
+
+
+class RetrievalFailureTests(unittest.TestCase):
+    def test_context_compiler_falls_back_when_vector_embedding_fails(self):
+        from project_assistant.config import ProjectConfig
+        from project_assistant.context_compiler import ContextCompiler
+        from project_assistant.repo_catalog import RepoRoute
+        from project_assistant.retrieval_types import SearchHit
+
+        class FakeCatalog:
+            def route(self, *args, **kwargs):
+                return [RepoRoute("repo", 1.0, ("lexical",))]
+
+        class FakeIndexer:
+            def __init__(self):
+                self.catalog = FakeCatalog()
+            def vector_search(self, query, k=10):
+                raise RuntimeError("Portkey embedding HTTP 502: <html><body>Bad Gateway</body></html>")
+            def lexical_search(self, query, k=10):
+                return [SearchHit("lexical answer", {"id":"l1","repo":"repo","source":"/repo/a.java","relative_path":"a.java","start_line":1,"end_line":2}, 0.0, ("lexical",))]
+            def exact_search(self, query, k=10):
+                return []
+            def fuse(self, vector, lexical, exact, limit):
+                return (vector + lexical + exact)[:limit]
+            def chunks_for_locations(self, locations, limit=20):
+                return []
+            def chunks_for_sources(self, paths, limit=20):
+                return []
+
+        class FakeGraph:
+            def search(self, query, limit=10):
+                return []
+            def related_locations(self, hits, limit=20):
+                return []
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            store = ConversationStore(root / "conversations")
+            compiler = ContextCompiler(root, ProjectConfig(name="x"), FakeIndexer(), store, FakeGraph())  # type: ignore[arg-type]
+            seed = compiler.initial_retrieval("why did this fail?", None)
+            self.assertTrue(seed.direct_hits)
+            self.assertTrue(seed.warnings)
+            self.assertNotIn("<html>", seed.warnings[0])
+            compiled = compiler.compile("why did this fail?", seed=seed)
+            self.assertIn("lexical answer", compiled.text)
+            self.assertTrue(compiled.retrieval_warnings)
+
+    def test_hybrid_search_falls_back_to_lexical_if_vector_search_fails(self):
+        import sys
+        import types
+        fake_chroma = types.ModuleType("langchain_chroma")
+        fake_chroma.Chroma = object
+        fake_docs = types.ModuleType("langchain_core.documents")
+        fake_docs.Document = object
+        with patch.dict(sys.modules, {"langchain_chroma": fake_chroma, "langchain_core.documents": fake_docs}):
+            from project_assistant.indexing import IncrementalIndexer
+        from project_assistant.retrieval_types import SearchHit
+
+        indexer = object.__new__(IncrementalIndexer)
+        indexer.config = type("Config", (), {"rag_top_n": 12, "vector_top_k": 24})()
+        indexer.vector_search = lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("502"))
+        indexer.lexical_search = lambda *args, **kwargs: [SearchHit("local", {"id":"x"}, 0.0, ("lexical",))]
+        indexer.exact_search = lambda *args, **kwargs: []
+        indexer.fuse = lambda vector, lexical, exact, limit: (vector + lexical + exact)[:limit]
+        hits = indexer.search("test")
+        self.assertEqual(hits[0].text, "local")
+
+    def test_embedding_http_html_is_sanitised(self):
+        from project_assistant.portkey import PortkeyEmbeddings
+        detail = PortkeyEmbeddings._safe_http_detail("<html><body><h1>502 Bad Gateway</h1></body></html>")
+        self.assertEqual(detail, "502 Bad Gateway")

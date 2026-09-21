@@ -1,6 +1,38 @@
+## 0.7.1 — Retrieval fail-soft hotfix
+
+- Semantic embedding failures during chat/context compilation no longer abort the request.
+- Retrieval falls back to local FTS, exact matching and the knowledge graph when Portkey/Bedrock embeddings return 5xx errors.
+- Semantic query text is bounded before remote embedding so pasted logs/error dumps do not create oversized query requests.
+- Hybrid `search_project` retrieval also falls back to lexical/exact search if vector search is unavailable.
+- Portkey HTML gateway error pages are sanitised to short plain-text diagnostics instead of surfacing raw HTML in the web UI.
+- Context inspector exposes retrieval warnings; warnings are diagnostic only and are not injected into the model context.
+
 # Changelog
 
-## 0.6.7.4 — Balanced egress policy
+## v0.7.0 — Retrieval 2.0
+
+- Added conversation-aware multi-query retrieval; previous user turns now influence source search rather than only appearing in the final prompt.
+- Repository routing is now a ranking boost, not a hard filter.
+- Increased final project context from a narrow 12 chunks to roughly 30 diversified/coherent chunks within the configured token budget.
+- Added coherent expansion around adjacent chunks, repeated-hit files and knowledge-graph neighbours.
+- Added a provider-safe GPT retrieval-planning pass with read-only local operations: `search_project`, `search_exact`, `find_symbol`, `find_references`, `read_file`, and `read_file_range`.
+- Bounded planner semantic searches to avoid turning one chat into a large burst of embedding requests.
+- Added Java knowledge-graph extraction for classes, methods, imports and approximate calls.
+- Added independent graph index versioning so existing vectors are reused while structural graph data can refresh locally.
+- Context inspector/SSE now exposes retrieval query variants and agent retrieval actions.
+- Default context budget increased to 48K tokens (`CONTEXT_MAX_TOKENS` remains configurable).
+- Added explicit prompt guidance not to ask users to paste indexed files until project retrieval has been attempted.
+
+## v0.6.7.5 — Markdown rendering + local dictation
+
+- Assistant/system/event messages now render GitHub-flavoured Markdown in the local web UI.
+- Fenced shell/code blocks, inline code, headings, lists, tables, blockquotes and links are styled for readability.
+- Markdown rendering uses `react-markdown` without raw-HTML rendering.
+- Added optional local-only dictation: browser microphone audio is encoded as PCM WAV, proxied only to the loopback FastAPI service, transcribed by a locally installed `whisper.cpp` `whisper-cli`, then inserted into the composer for review before send.
+- Dictation requires an explicit local model path and performs no model download or external speech API call.
+- Added dictation status to `/api/status` and regression tests for local WAV/transcript handling.
+
+## v0.6.7.4 — Balanced egress policy
 
 - Relaxed source/chat text scanning to block only high-confidence credential material.
 - Credential-looking references, vault paths, environment-variable references and config identifiers are advisory and no longer prevent embedding/chat.

@@ -1,0 +1,11 @@
+Metadata-Version: 2.4
+Name: local-project-assistant
+Version: 0.7.1
+Summary: Local-first project assistant with authenticated Next.js/FastAPI UI, egress controls, iterative multi-repo RAG, knowledge graph, read-only retrieval planning and approval-gated changes
+Requires-Python: >=3.11
+Requires-Dist: fastapi>=0.115.0
+Requires-Dist: uvicorn>=0.34.0
+Requires-Dist: langchain-chroma>=0.2.0
+Requires-Dist: langchain-core>=0.3.0
+Requires-Dist: portkey-ai==2.3.4
+Requires-Dist: pymupdf>=1.24.0

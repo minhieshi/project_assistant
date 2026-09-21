@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Iterable, Protocol
+import re
 
 from .config import PortkeySettings
 from .security import EgressPolicy
@@ -67,6 +68,30 @@ class PortkeyEmbeddings:
 
         raise RuntimeError("Portkey embedding response contained no vector")
 
+    @staticmethod
+    def _safe_http_detail(detail: str, reason: object | None = None) -> str:
+        """Collapse gateway HTML/error pages into a short plain-text diagnostic."""
+        raw = (detail or "").strip()
+        if raw:
+            try:
+                import json
+                payload = json.loads(raw)
+                if isinstance(payload, dict):
+                    error = payload.get("error")
+                    if isinstance(error, dict):
+                        raw = str(error.get("message") or error.get("detail") or error)
+                    else:
+                        raw = str(payload.get("message") or payload.get("detail") or raw)
+            except Exception:
+                pass
+        if "<html" in raw.lower() or "<!doctype" in raw.lower() or re.search(r"</?[a-z][^>]*>", raw, re.I):
+            raw = re.sub(r"<script.*?</script>|<style.*?</style>", " ", raw, flags=re.I | re.S)
+            raw = re.sub(r"<[^>]+>", " ", raw)
+        raw = re.sub(r"\s+", " ", raw).strip()
+        if not raw:
+            raw = str(reason or "upstream gateway error")
+        return raw[:500]
+
     def _embed_one(self, text: str, *, label: str) -> list[float]:
         import json
         from urllib.error import HTTPError, URLError
@@ -105,6 +130,7 @@ class PortkeyEmbeddings:
                 payload = json.loads(raw_response.read().decode("utf-8"))
         except HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace")
+            detail = self._safe_http_detail(detail, getattr(exc, "reason", None))
             raise RuntimeError(f"Portkey embedding HTTP {exc.code}: {detail}") from exc
         except URLError as exc:
             raise RuntimeError(f"Portkey embedding request failed: {exc.reason}") from exc

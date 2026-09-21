@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from pathlib import Path
 from typing import Iterable
 
@@ -33,7 +34,7 @@ from .schemas import (
 
 
 API_TOKEN = load_or_create_api_token()
-app = FastAPI(title="Local Project Assistant", version="0.7.0")
+app = FastAPI(title="Local Project Assistant", version="0.7.1")
 app.add_middleware(TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost", "testserver"])
 
 
@@ -49,8 +50,17 @@ async def local_api_auth(request: Request, call_next):
     return response
 
 
+def _safe_error_message(exc: Exception) -> str:
+    message = f"{type(exc).__name__}: {exc}"
+    if "<html" in message.lower() or "<!doctype" in message.lower() or re.search(r"</?[a-z][^>]*>", message, re.I):
+        message = re.sub(r"<script.*?</script>|<style.*?</style>", " ", message, flags=re.I | re.S)
+        message = re.sub(r"<[^>]+>", " ", message)
+    message = re.sub(r"\s+", " ", message).strip()
+    return message[:700]
+
+
 def _error(exc: Exception, status: int = 400) -> HTTPException:
-    return HTTPException(status_code=status, detail=f"{type(exc).__name__}: {exc}")
+    return HTTPException(status_code=status, detail=_safe_error_message(exc))
 
 
 def _project_info(project_id: str) -> dict:
@@ -93,7 +103,7 @@ def _sse(event: str, payload: dict | str) -> str:
 
 @app.get("/health")
 def health() -> dict:
-    return {"status": "ok", "version": "0.7.0"}
+    return {"status": "ok", "version": "0.7.1"}
 
 
 @app.get("/api/status")
@@ -103,7 +113,7 @@ def status() -> dict:
 
     settings = PortkeySettings.from_env()
     return {
-        "version": "0.7.0",
+        "version": "0.7.1",
         "projects_root": str(registry.projects_root),
         "portkey": {
             "base_url": settings.base_url,
@@ -319,6 +329,7 @@ def stream_chat(project_id: str, conversation_id: str, body: ChatRequest):
                             "graph_sources": list(compiled.graph_sources),
                             "retrieval_queries": list(compiled.retrieval_queries),
                             "retrieval_actions": list(compiled.retrieval_actions),
+                            "retrieval_warnings": list(compiled.retrieval_warnings),
                         },
                     )
                 elif event[0] == "delta":
@@ -326,7 +337,7 @@ def stream_chat(project_id: str, conversation_id: str, body: ChatRequest):
                 elif event[0] == "done":
                     yield _sse("done", {"ok": True})
         except Exception as exc:
-            yield _sse("error", {"message": f"{type(exc).__name__}: {exc}"})
+            yield _sse("error", {"message": _safe_error_message(exc)})
 
     return StreamingResponse(generate(), media_type="text/event-stream", headers={"Cache-Control": "no-store"})
 
@@ -416,6 +427,7 @@ async def inspect_context(project_id: str, body: QueryRequest) -> dict:
             "graph_sources": list(compiled.graph_sources),
             "retrieval_queries": list(compiled.retrieval_queries),
             "retrieval_actions": list(compiled.retrieval_actions),
+            "retrieval_warnings": list(compiled.retrieval_warnings),
             "text": compiled.text,
             "debug_path": str(path),
         }

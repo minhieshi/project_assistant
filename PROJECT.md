@@ -89,3 +89,12 @@ Embedding transport is intentionally a literal Python equivalent of the confirme
 - Hard-bound every final source/PDF chunk so pathological long lines cannot exceed the configured embedding chunk size.
 - Preserve local lexical/graph access when a particular file cannot be embedded remotely.
 - Persist index progress and per-repo statistics to `.assistant/index_status.json` and surface them in the web UI.
+
+
+## v0.7 retrieval decision
+
+Retrieval is now iterative and conversation-aware. GPT may plan additional read-only searches over indexed sources before producing a final response. Repo routing is a boost only. Existing vector embeddings are retained; graph parser upgrades refresh locally via `graph_index_version`.
+
+
+## v0.7.1 hotfix
+Semantic/vector retrieval and the retrieval-planner pass are fail-soft. Portkey/Bedrock embedding failures no longer abort chat; local FTS/exact/knowledge-graph retrieval continues, semantic queries are bounded, and gateway HTML errors are sanitised.

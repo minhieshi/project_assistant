@@ -72,14 +72,21 @@ class ProjectAssistant:
         enabled = os.getenv("RETRIEVAL_AGENT_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
         if agentic and enabled:
             recent = self.conversations.recent_text(conversation_id, max_chars=18000) if conversation_id else ""
-            result = self.retrieval_agent.plan_and_retrieve(
-                query,
-                recent,
-                list(seed.initial_hits),
-                routed_repos=[route.name for route in seed.routes],
-            )
-            extra_hits = list(result.hits)
-            actions = tuple(action.label() for action in result.actions)
+            try:
+                result = self.retrieval_agent.plan_and_retrieve(
+                    query,
+                    recent,
+                    list(seed.initial_hits),
+                    routed_repos=[route.name for route in seed.routes],
+                )
+                extra_hits = list(result.hits)
+                actions = tuple(action.label() for action in result.actions)
+            except Exception:
+                # The planner is an optional retrieval enhancement. If the remote
+                # chat route is temporarily unavailable, answer from deterministic
+                # local retrieval rather than failing before the final answer path.
+                extra_hits = []
+                actions = ()
         return self.compiler.compile(
             query,
             conversation_id,
