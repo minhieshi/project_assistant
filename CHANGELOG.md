@@ -1,3 +1,10 @@
+# 0.6.7.1
+
+- Fix packaging/install issue that could leave `project_assistant.index_status` unavailable at runtime.
+- Flatten release directory so the package root is unambiguous.
+- Switch build backend from Hatchling to setuptools and add a compatibility `setup.py`.
+- No indexing/RAG behaviour changes from 0.6.7.
+
 # Changelog
 
 ## v0.6.7

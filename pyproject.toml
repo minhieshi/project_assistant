@@ -1,6 +1,6 @@
 [project]
 name = "local-project-assistant"
-version = "0.6.7"
+version = "0.6.7.1"
 description = "Local-first project assistant with authenticated Next.js/FastAPI UI, egress controls, incremental RAG, knowledge graph and two-stage approval-gated changes and persistent Git-backed project discovery"
 requires-python = ">=3.11"
 dependencies = [
@@ -17,8 +17,11 @@ project-assistant = "project_assistant.cli:main"
 project-assistant-api = "project_assistant.api_server:main"
 
 [build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
 
-[tool.hatch.build.targets.wheel]
-packages = ["src/project_assistant"]
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
