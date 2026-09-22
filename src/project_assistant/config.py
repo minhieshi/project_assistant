@@ -23,9 +23,19 @@ class SourceRoot:
 
 
 @dataclass
+class ZoweSystem:
+    name: str
+    base_profile: str | None = None
+    zosmf_profile: str | None = None
+    allowed_tools: list[str] = field(default_factory=lambda: ["datasets", "jobs", "logs"])
+    enabled: bool = True
+
+
+@dataclass
 class ProjectConfig:
     name: str
     source_roots: list[SourceRoot] = field(default_factory=list)
+    zowe_systems: list[ZoweSystem] = field(default_factory=list)
     system_prompt_path: str = "assistant_system.md"
     project_memory_path: str = "PROJECT.md"
     conversation_dir: str = ".assistant/conversations"
@@ -47,6 +57,16 @@ class ProjectConfig:
             raise FileNotFoundError(f"Project is not initialised: {path}")
         raw = json.loads(path.read_text(encoding="utf-8"))
         raw["source_roots"] = [SourceRoot(**item) for item in raw.get("source_roots", [])]
+        zowe_systems = []
+        for item in raw.get("zowe_systems", []):
+            item = dict(item)
+            # Accept the early design shorthand `profile` as a base profile.
+            if item.get("profile") and not item.get("base_profile") and not item.get("zosmf_profile"):
+                item["base_profile"] = item.pop("profile")
+            else:
+                item.pop("profile", None)
+            zowe_systems.append(ZoweSystem(**item))
+        raw["zowe_systems"] = zowe_systems
         config = cls(**raw)
         # A modified project.json must not redirect internal reads/writes outside
         # the registered project directory.

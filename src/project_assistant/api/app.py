@@ -31,7 +31,7 @@ from .schemas import (
 
 
 API_TOKEN = load_or_create_api_token()
-app = FastAPI(title="Local Project Assistant", version="0.7.9")
+app = FastAPI(title="Local Project Assistant", version="0.8.0")
 app.add_middleware(TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost", "testserver"])
 
 
@@ -73,6 +73,10 @@ def _project_info(project_id: str) -> dict:
             {"name": source.name, "path": str(Path(source.path).expanduser().resolve())}
             for source in config.resolved_sources(path)
         ],
+        "zowe_systems": [
+            {"name": system.name, "enabled": system.enabled, "allowed_tools": list(system.allowed_tools)}
+            for system in config.zowe_systems
+        ],
     }
 
 
@@ -89,7 +93,7 @@ def _sse(event: str, payload: dict | str) -> str:
 
 @app.get("/health")
 def health() -> dict:
-    return {"status": "ok", "version": "0.7.9"}
+    return {"status": "ok", "version": "0.8.0"}
 
 
 @app.get("/api/status")
@@ -99,7 +103,7 @@ def status() -> dict:
 
     settings = PortkeySettings.from_env()
     return {
-        "version": "0.7.9",
+        "version": "0.8.0",
         "projects_root": str(registry.projects_root),
         "portkey": {
             "base_url": settings.base_url,
@@ -300,6 +304,7 @@ def stream_chat(project_id: str, conversation_id: str, body: ChatRequest):
                             "routed_repos": list(compiled.routed_repos),
                             "rag_sources": list(compiled.rag_sources),
                             "graph_sources": list(compiled.graph_sources),
+                            "live_mainframe_sources": list(compiled.live_mainframe_sources),
                             "retrieval_queries": list(compiled.retrieval_queries),
                             "retrieval_actions": list(compiled.retrieval_actions),
                             "retrieval_warnings": list(compiled.retrieval_warnings),
@@ -327,6 +332,7 @@ async def prepare_implementation_brief(project_id: str, conversation_id: str, bo
                 "routed_repos": list(compiled.routed_repos),
                 "rag_sources": list(compiled.rag_sources),
                 "graph_sources": list(compiled.graph_sources),
+                "live_mainframe_sources": list(compiled.live_mainframe_sources),
                 "retrieval_queries": list(compiled.retrieval_queries),
                 "retrieval_actions": list(compiled.retrieval_actions),
                 "retrieval_warnings": list(compiled.retrieval_warnings),
@@ -349,6 +355,7 @@ async def inspect_context(project_id: str, body: QueryRequest) -> dict:
             "routed_repos": list(compiled.routed_repos),
             "rag_sources": list(compiled.rag_sources),
             "graph_sources": list(compiled.graph_sources),
+            "live_mainframe_sources": list(compiled.live_mainframe_sources),
             "retrieval_queries": list(compiled.retrieval_queries),
             "retrieval_actions": list(compiled.retrieval_actions),
             "retrieval_warnings": list(compiled.retrieval_warnings),
