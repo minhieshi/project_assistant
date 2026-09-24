@@ -1,41 +1,62 @@
-# Local Project Assistant — v0.7.9
+# Local Project Assistant — v0.8.0
 
-Project Assistant is a local-first **read-only project intelligence layer** for source-heavy engineering work. It keeps persistent project conversations and multi-repository knowledge locally, retrieves the right code/configuration context, and uses the configured enterprise Portkey routes for GPT-5.6 reasoning and embeddings.
+Project Assistant recreates the useful parts of the enterprise ChatGPT browser experience locally while using approved Portkey routes for GPT-5.6 inference and embeddings. It keeps persistent project conversations, indexes multiple repositories, builds high-signal project context, and can now produce source-grounded **copy-pasteable implementation code** without writing to the repositories itself.
 
 Its boundary is deliberate:
 
 ```text
 Project Assistant
   understand / retrieve / investigate / design
-  prepare a source-grounded implementation brief
+  break large changes into small implementation steps
+  author complete code/config/tests for the current step
                     |
                     v
-                 OpenCode
-  edit / run commands / test / iterate / commit
+                  Human
+  review / copy-paste / run / test / commit
 ```
 
-Project Assistant does **not** edit registered source repositories, stage/apply patches, or expose arbitrary shell execution.
+Registered source repositories remain read-only to Project Assistant. It does not apply patches, stage files, commit, or expose arbitrary shell execution.
 
-## v0.7.9 — OpenCode handoff
+## v0.8.0 — Guided implementation
 
-The chat composer now has two modes:
+The composer has two modes:
 
-- **Chat** — ask project questions, debug integrations, trace behaviour, discuss architecture/design and investigate failures.
-- **OpenCode brief** — package the current conversation into a structured implementation handoff. You can optionally type a narrower focus, or leave the box blank to use the current conversation.
+- **Chat** — project questions, debugging, architecture, design and investigation.
+- **Guided implementation** — implementation work with a human approval boundary.
 
-The generated brief is persisted in the conversation Markdown and includes, where supported by retrieved evidence:
+For a non-trivial coding request, Guided implementation:
 
-- problem / desired outcome;
-- current understanding and root cause;
-- integration path across repositories;
-- relevant repositories, relative paths and symbols;
-- ordered implementation direction without a patch;
-- constraints and behaviours to preserve;
-- validation/tests;
-- unresolved checks for OpenCode;
-- retrieval evidence.
+1. uses conversation-aware RAG plus bounded live read-only exploration;
+2. breaks the work into 2–6 small coherent steps;
+3. explains the approach and stops before implementation code;
+4. waits for the user to confirm the next step;
+5. re-reads the relevant live source for that turn;
+6. emits complete copy-pasteable code for **one step only**;
+7. provides validation commands/checks and stops again for user input.
 
-Each generated **OpenCode Implementation Brief** has a **Copy for OpenCode** button.
+The conversation itself is the workflow state. There is no separate orchestration engine and no autonomous source mutation.
+
+### Copy-paste code contract
+
+For each changed artefact, GPT is instructed to provide:
+
+```text
+Repository: <registered repository>
+File: <relative/path>
+Action: Create file | Replace file | Replace function/class/section | Insert at exact anchor
+Why: <short explanation>
+```
+
+Then it must provide a complete pasteable unit:
+
+- new files: complete file;
+- small/medium existing files: prefer complete replacement file;
+- large files: complete replacement function/class/contiguous section with an exact anchor;
+- atomic multi-file steps: include every file needed for that step;
+- no `...`, `existing code`, `rest unchanged`, omitted imports or pseudo-code inside replacement blocks;
+- no diff unless explicitly requested.
+
+Assistant responses have a **Copy response** control and fenced code blocks have their own **Copy** control.
 
 ## Architecture
 
@@ -65,9 +86,7 @@ Configured enterprise Portkey gateway
 
 ## Retrieval
 
-Normal chat and OpenCode handoffs automatically perform conversation-aware retrieval. **Compile context** is an inspection/debugging feature; it is not required before asking a question.
-
-The retrieval path combines:
+Normal Chat and Guided implementation automatically perform conversation-aware retrieval. **Compile context** remains an inspection/debugging feature and is not required before asking a question.
 
 ```text
 current request + recent conversation
@@ -91,9 +110,9 @@ bounded GPT retrieval planner
 compiled high-signal project context
 ```
 
-Live file/Git tools operate only inside the Project Assistant workspace and explicitly registered source roots. They do not expose an arbitrary shell and do not write to source repositories.
+Guided implementation has a stronger retrieval contract: likely target files must be located and read live where possible before the model declares context sufficient for copy-paste code generation. This is particularly important for short continuation turns such as `yes`, `next`, or `do step 2`, where the retrieval planner uses recent conversation state to recover the target files.
 
-For **OpenCode brief** mode, the retrieval planner is specifically instructed to locate likely implementation/integration files, follow cross-repository dependencies, read important files live where possible, and return concrete repository/path/symbol references for the coding agent.
+Live file/Git tools operate only inside the Project Assistant workspace and explicitly registered source roots. They do not expose an arbitrary shell and do not write to source repositories.
 
 ## Projects and source roots
 
@@ -108,9 +127,7 @@ Recommended layout:
 ~/work/mainframe/config/                            # registered source, Git optional
 ```
 
-Register each independent child source rather than making a parent folder into a nested Git repository.
-
-Both Git-backed and plain source directories are supported.
+Register each independent child source rather than making a parent folder into a nested Git repository. Both Git-backed and plain source directories are supported.
 
 ## Indexing
 
@@ -118,7 +135,7 @@ Both Git-backed and plain source directories are supported.
 
 - unchanged file content is not re-embedded;
 - branch/HEAD metadata can refresh independently of content fingerprints;
-- unsuitable archives/compiled/binary/generated/oversized/sensitive artefacts are skipped;
+- archives/compiled/binary/generated/oversized/sensitive artefacts are skipped;
 - provider-rejected or non-egressable content can remain available to local lexical/graph retrieval where appropriate;
 - indexing status and skip/local-only reasons are persisted and shown in the UI.
 
@@ -137,15 +154,10 @@ Content-Type: application/json
 
 ## Security boundary
 
-### Browser/API isolation
-
 - FastAPI binds to loopback by default.
 - Every `/api/*` request requires a generated local API token.
 - Next.js adds that token server-side; browser JavaScript does not receive it.
 - Portkey credentials remain backend-only.
-
-### Filesystem and egress controls
-
 - source roots must pass registration validation;
 - symlink escapes outside registered roots are rejected;
 - sensitive credential paths/files are excluded;
@@ -153,23 +165,20 @@ Content-Type: application/json
 - local-only retrieval can remain available when egress is not permitted;
 - retrieved source is treated as untrusted evidence.
 
-### Source mutation
-
-The active v0.7.9 API/UI/CLI has no source patch staging/apply workflow. Registered source repositories are read through controlled tools only. Historical `change_gate.py` code/data is retained for compatibility with older project state but is not wired into the normal v0.7.9 execution path.
+Project Assistant may **author** code but may not **apply** it. Historical `change_gate.py` compatibility code/data remains present but is not wired into the active v0.8.0 API/UI workflow.
 
 ## Persistent local state
 
 Project-local assistant state lives under `.assistant/`, including the semantic/lexical/graph indexes, index metadata/status, context debug snapshots and conversation Markdown. Managed/imported project discovery state lives under `~/.project-assistant/`.
 
-## Frontend performance
-
-The v0.7.6 performance work remains in place:
+## Frontend
 
 - composer text is isolated from page-level React state;
 - historical Markdown messages are memoised;
 - streamed output is buffered rather than re-rendering per tiny token fragment;
 - compiled context is collapsed by default;
-- off-screen historical messages use browser content visibility.
+- off-screen historical messages use browser content visibility;
+- assistant responses and fenced code blocks have copy controls.
 
 macOS Dictation works directly in the normal textarea; Project Assistant has no microphone/Whisper integration.
 
@@ -192,24 +201,19 @@ npm install
 cd ..
 ```
 
-Configure the required Portkey environment variables in your shell, then start the backend and frontend using your existing workflow or `scripts/dev.sh`.
+Configure the required Portkey environment variables, then start the backend and frontend using your existing workflow or `scripts/dev.sh`.
 
-No reindex is required solely for the v0.7.9 UI/handoff change. Reindex only when source/index metadata itself needs refreshing.
+No reindex is required solely for the v0.8.0 guided-implementation change. Reindex only when source/index metadata itself needs refreshing.
 
 ## CLI
-
-Useful commands include:
 
 ```bash
 project-assistant projects
 project-assistant --project /path/to/project index
 project-assistant --project /path/to/project chat-new "Investigation"
 project-assistant --project /path/to/project chat <conversation-id> "Why is this failing?"
-project-assistant --project /path/to/project handoff <conversation-id>
-project-assistant --project /path/to/project handoff <conversation-id> --focus "Fix the ANSWER integration issue"
+project-assistant --project /path/to/project chat <conversation-id> "Implement the next step" --guided
 project-assistant --project /path/to/project context "How does asset rebuild flow across repos?"
 project-assistant --project /path/to/project search "IKJEFT01"
 project-assistant --project /path/to/project graph "AssetLookup"
 ```
-
-`handoff` prints the generated OpenCode implementation brief and stores it in the conversation.

@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { FormEvent, isValidElement, memo, useCallback, useEffect, useMemo, useRef, useState, type ComponentPropsWithoutRef, type ReactNode } from "react";
 import { api, streamChat } from "@/lib/api";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -146,9 +146,9 @@ export default function Home() {
     } catch (e) { setError(String(e)); } finally { setBusy(false); }
   }
 
-  const send = useCallback(async (textValue: string, sendMode: "chat" | "handoff") => {
+  const send = useCallback(async (textValue: string, sendMode: "chat" | "guided") => {
     const text = textValue.trim();
-    if (!projectId || !conversationId || busy || (sendMode === "chat" && !text)) return;
+    if (!projectId || !conversationId || busy || !text) return;
     setBusy(true); setError(""); setStreamingText("");
 
     let pendingDelta = "";
@@ -162,25 +162,19 @@ export default function Home() {
     };
 
     try {
-      if (sendMode === "handoff") {
-        const result = await api.implementationBrief(projectId, conversationId, text);
-        setContext(result.context);
-        await loadConversation(projectId, conversationId);
-      } else {
-        const optimistic: ConversationEntry = { title: "User", timestamp: new Date().toISOString(), body: text, role: "user" };
-        setConversation((current) => current ? { ...current, entries: [...current.entries, optimistic] } : current);
-        await streamChat(projectId, conversationId, text, {
-          onContext: (value) => setContext(value),
-          onDelta: (delta) => {
-            pendingDelta += delta;
-            if (flushTimer === null) flushTimer = window.setTimeout(flushStreaming, 50);
-          },
-        });
-        if (flushTimer !== null) window.clearTimeout(flushTimer);
-        flushStreaming();
-        await loadConversation(projectId, conversationId);
-        setStreamingText("");
-      }
+      const optimistic: ConversationEntry = { title: "User", timestamp: new Date().toISOString(), body: text, role: "user" };
+      setConversation((current) => current ? { ...current, entries: [...current.entries, optimistic] } : current);
+      await streamChat(projectId, conversationId, text, sendMode, {
+        onContext: (value) => setContext(value),
+        onDelta: (delta) => {
+          pendingDelta += delta;
+          if (flushTimer === null) flushTimer = window.setTimeout(flushStreaming, 50);
+        },
+      });
+      if (flushTimer !== null) window.clearTimeout(flushTimer);
+      flushStreaming();
+      await loadConversation(projectId, conversationId);
+      setStreamingText("");
       await loadConversations(projectId);
     } catch (e) {
       if (flushTimer !== null) window.clearTimeout(flushTimer);
@@ -282,7 +276,7 @@ export default function Home() {
   return (
     <div className="app-shell">
       <aside className="sidebar">
-        <div className="brand">Project Assistant <span className="small">v0.7.9</span></div>
+        <div className="brand">Project Assistant <span className="small">v0.8.0</span></div>
         {appStatus && <div className="notice" style={{ marginBottom: 12 }}>Projects: {appStatus.projects_root}<br />Portkey: {appStatus.portkey.base_url_configured ? "URL configured" : "URL missing"}</div>}
 
         <div className="section-title">Projects</div>
@@ -375,8 +369,8 @@ export default function Home() {
         </div>
         <ContextPanel context={context} />
 
-        <div className="section-title">OpenCode handoff</div>
-        <div className="notice">Project Assistant is read-only project intelligence. Use <strong>Prepare OpenCode brief</strong> in the composer to package the current investigation, source paths, integration context, constraints and validation plan for your coding agent.</div>
+        <div className="section-title">Guided implementation</div>
+        <div className="notice">Use <strong>Guided implementation</strong> for coding work. Project Assistant will break larger changes into small steps, pause between steps, re-read live source before coding, and return complete copy-pasteable code while keeping repository writes under your control.</div>
       </aside>
     </div>
   );
@@ -385,10 +379,10 @@ export default function Home() {
 const Message = memo(function Message({ entry }: { entry: ConversationEntry }) {
   const role = entry.role === "event" ? "event" : entry.role;
   const markdown = entry.role !== "user";
-  const isHandoff = entry.title === "OpenCode Implementation Brief";
+  const canCopy = entry.role !== "user";
   const [copied, setCopied] = useState(false);
 
-  async function copyBrief() {
+  async function copyMessage() {
     try {
       await navigator.clipboard.writeText(entry.body);
       setCopied(true);
@@ -398,10 +392,10 @@ const Message = memo(function Message({ entry }: { entry: ConversationEntry }) {
     }
   }
 
-  return <div className={`message ${role} ${isHandoff ? "handoff-message" : ""}`}>
+  return <div className={`message ${role}`}>
     <div className="message-heading">
       <div className="message-label">{entry.title}{entry.timestamp ? ` · ${timeLabel(entry.timestamp)}` : ""}</div>
-      {isHandoff && <button type="button" className="btn compact" onClick={() => void copyBrief()}>{copied ? "Copied" : "Copy for OpenCode"}</button>}
+      {canCopy && <button type="button" className="btn compact" onClick={() => void copyMessage()}>{copied ? "Copied" : "Copy response"}</button>}
     </div>
     {markdown ? (
       <div className="message-body markdown">
@@ -409,12 +403,42 @@ const Message = memo(function Message({ entry }: { entry: ConversationEntry }) {
           remarkPlugins={[remarkGfm]}
           components={{
             a: ({ href, children }) => <a href={href} target="_blank" rel="noreferrer">{children}</a>,
+            pre: MarkdownPre,
           }}
         >{entry.body}</ReactMarkdown>
       </div>
     ) : <div className="message-body">{entry.body}</div>}
   </div>;
 });
+
+function markdownText(node: ReactNode): string {
+  if (typeof node === "string" || typeof node === "number") return String(node);
+  if (Array.isArray(node)) return node.map(markdownText).join("");
+  if (isValidElement<{ children?: ReactNode }>(node)) return markdownText(node.props.children);
+  return "";
+}
+
+function MarkdownPre({ children, ...props }: ComponentPropsWithoutRef<"pre">) {
+  const [copied, setCopied] = useState(false);
+  const text = markdownText(children).replace(/\n$/, "");
+  const className = isValidElement<{ className?: string }>(children) ? children.props.className ?? "" : "";
+  const language = className.startsWith("language-") ? className.slice("language-".length) : "code";
+
+  async function copyCode() {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1400);
+    } catch {
+      setCopied(false);
+    }
+  }
+
+  return <div className="code-frame">
+    <div className="code-toolbar"><span>{language}</span><button type="button" className="code-copy" onClick={() => void copyCode()}>{copied ? "Copied" : "Copy"}</button></div>
+    <pre {...props}>{children}</pre>
+  </div>;
+}
 
 function StreamingMessage({ text }: { text: string }) {
   return <div className="message assistant streaming-message">
@@ -423,14 +447,14 @@ function StreamingMessage({ text }: { text: string }) {
   </div>;
 }
 
-const Composer = memo(function Composer({ busy, onSend }: { busy: boolean; onSend: (text: string, mode: "chat" | "handoff") => Promise<void> }) {
+const Composer = memo(function Composer({ busy, onSend }: { busy: boolean; onSend: (text: string, mode: "chat" | "guided") => Promise<void> }) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const [mode, setMode] = useState<"chat" | "handoff">("chat");
+  const [mode, setMode] = useState<"chat" | "guided">("chat");
 
   function submit() {
     const textarea = textareaRef.current;
     const text = textarea?.value.trim() ?? "";
-    if (!textarea || busy || (mode === "chat" && !text)) return;
+    if (!textarea || busy || !text) return;
     textarea.value = "";
     void onSend(text, mode);
   }
@@ -443,17 +467,17 @@ const Composer = memo(function Composer({ busy, onSend }: { busy: boolean; onSen
         onKeyDown={(event) => {
           if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); submit(); }
         }}
-        placeholder={mode === "handoff" ? "Optional handoff focus. Leave blank to package the current conversation for OpenCode." : "Ask about this project..."}
+        placeholder={mode === "guided" ? "Describe the change. Larger tasks will be split into small steps and paused for your approval." : "Ask about this project..."}
       />
       <div className="composer-actions">
         <div className="row wrap">
           <div className="mode">
             <button type="button" className={mode === "chat" ? "active" : ""} onClick={() => setMode("chat")}>Chat</button>
-            <button type="button" className={mode === "handoff" ? "active" : ""} onClick={() => setMode("handoff")}>OpenCode brief</button>
+            <button type="button" className={mode === "guided" ? "active" : ""} onClick={() => setMode("guided")}>Guided implementation</button>
           </div>
         </div>
-        <button type="button" className="btn primary" onClick={submit} disabled={busy}>{busy ? "Working…" : mode === "handoff" ? "Prepare OpenCode brief" : "Send"}</button>
-        <span className="small">Read-only source access. OpenCode owns edits, commands, tests and Git changes. macOS Dictation works in this box.</span>
+        <button type="button" className="btn primary" onClick={submit} disabled={busy}>{busy ? "Working…" : "Send"}</button>
+        <span className="small">Read-only source access. Guided mode can author complete copy-pasteable code; you remain the write/commit boundary. macOS Dictation works in this box.</span>
       </div>
     </div>
   </div>;

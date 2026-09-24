@@ -16,11 +16,11 @@ Restore the high-value parts of the enterprise ChatGPT browser experience locall
 - Controlled live read-only filesystem and Git inspection across registered roots.
 - GPT-5.6 inference through Portkey.
 - Pre-egress path/secret controls.
-- Structured OpenCode implementation-brief handoff for execution.
+- Guided, source-grounded copy-paste code generation with human-controlled application.
 
 ## Decisions
 
-- Project Assistant owns project understanding; OpenCode owns code execution.
+- Project Assistant owns project understanding and code authoring; the human owns source writes, execution, testing and commits.
 - Registered source roots are read-only from the active Project Assistant API/UI/CLI.
 - Treat source code as first-class RAG material.
 - Preserve repo/branch/commit/path/symbol/line metadata on code chunks.
@@ -28,7 +28,7 @@ Restore the high-value parts of the enterprise ChatGPT browser experience locall
 - Use hybrid retrieval: exact + lexical + semantic + graph expansion + live reads.
 - Route across repos as a boost only; never suppress strong global matches.
 - Keep graph extraction deterministic rather than LLM-generated.
-- Persist conversations and generated OpenCode briefs in Markdown.
+- Persist conversations and guided implementation decisions in Markdown.
 - Browser JavaScript receives neither Portkey credentials nor the local FastAPI token.
 - Treat obvious secrets and sensitive credential files as non-egressable; local-only retrieval is allowed where appropriate.
 - Keep assistant state out of source Git repositories where practical.
@@ -38,7 +38,7 @@ Restore the high-value parts of the enterprise ChatGPT browser experience locall
 
 ## Current work
 
-v0.7.9 focuses Project Assistant on read-only project intelligence and high-quality OpenCode handoff. Retrieval/indexing/knowledge-graph work remains the core; source mutation is delegated to the coding agent.
+v0.8.0 adds Guided implementation: larger coding tasks are decomposed, paused for user input, re-grounded against live source for each step, and returned as complete copy-pasteable code. Retrieval/indexing/knowledge-graph work remains the core; source mutation remains human-controlled.
 
 ## Known issues
 
@@ -126,6 +126,15 @@ Composer isolation, memoised Markdown messages, buffered streaming, lightweight 
 Git metadata is refreshed independently of source content fingerprints. Change proposals receive an authoritative live branch/HEAD/working-tree snapshot for implicated registered sources; non-Git folders are explicitly marked not applicable.
 
 
+
+
+## v0.8.0 — Guided implementation
+
+Project Assistant remains read-only with respect to registered source repositories, but it is no longer limited to implementation briefs. In Guided implementation mode it may author complete source/configuration/test code for the user to apply manually.
+
+The conversation is the task state: plan globally, stop for confirmation, retrieve the next step's live targets, implement one step, provide validation instructions, then stop again. This avoids a separate workflow engine and prevents long autonomous implementation runs from compounding stale assumptions.
+
+The copy-paste contract requires repository + relative path + action metadata and complete pasteable units. New files are returned in full; smaller existing files should usually be returned as complete replacements; large files use complete functions/classes/contiguous sections with exact anchors. Placeholders and omitted code are not permitted inside replacement blocks.
 
 ## v0.7.9 — Read-only project intelligence and coding-agent handoff
 

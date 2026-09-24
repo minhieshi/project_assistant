@@ -12,7 +12,6 @@ from .portkey import ChatModel
 from .retrieval_types import SearchHit
 from .security import outbound_metadata_allowed
 from .source_access import RegisteredSourceAccess
-from .zowe_access import ZoweAccess
 
 if TYPE_CHECKING:
     from .indexing import IncrementalIndexer
@@ -33,16 +32,9 @@ ALLOWED_TOOLS = {
     "git_diff",
     "git_log",
     "git_show",
-    "zos_list_datasets",
-    "zos_list_members",
-    "zos_read_dataset",
-    "zos_job_search",
-    "zos_job_status",
-    "zos_job_output",
-    "zos_system_logs",
 }
 
-NO_TARGET_TOOLS = {"list_files", "git_status", "git_diff", "git_log", "zos_job_search", "zos_system_logs"}
+NO_TARGET_TOOLS = {"list_files", "git_status", "git_diff", "git_log"}
 
 
 @dataclass(frozen=True)
@@ -51,7 +43,6 @@ class RetrievalAction:
     query: str = ""
     target: str = ""
     repo: str | None = None
-    system: str | None = None
     start_line: int | None = None
     end_line: int | None = None
     round_no: int = 0
@@ -59,15 +50,13 @@ class RetrievalAction:
     def label(self) -> str:
         subject = self.query or self.target
         suffix = f" repo={self.repo}" if self.repo else ""
-        if self.system:
-            suffix += f" system={self.system}"
         if self.start_line:
             suffix += f" lines={self.start_line}-{self.end_line or self.start_line}"
         prefix = f"round {self.round_no}: " if self.round_no else ""
         return f"{prefix}{self.tool}({subject!r}{suffix})"
 
     def key(self) -> tuple:
-        return (self.tool, self.query, self.target, self.repo, self.system, self.start_line, self.end_line)
+        return (self.tool, self.query, self.target, self.repo, self.start_line, self.end_line)
 
 
 @dataclass(frozen=True)
@@ -93,7 +82,6 @@ class RetrievalToolkit:
         self.indexer = indexer
         self.graph = graph
         self.sources = RegisteredSourceAccess(project_dir, config)
-        self.zowe = ZoweAccess(config)
 
     def source_names(self) -> tuple[str, ...]:
         return self.sources.source_names()
@@ -117,13 +105,7 @@ class RetrievalToolkit:
             lines.append(f"- {repo}: branch={branch}; HEAD={head}; working_tree={working_tree}")
         return "\n".join(lines) or "No registered source roots."
 
-    def live_mainframe_sources_text(self) -> str:
-        return self.zowe.describe_systems()
-
     def execute(self, action: RetrievalAction, limit: int = 12) -> list[SearchHit]:
-        if action.tool.startswith("zos_"):
-            return self._execute_zowe(action, limit)
-
         target_repo, target_value = self._split_repo_target(action.target or action.query, action.repo)
         repos = {target_repo} if target_repo else None
 
@@ -178,41 +160,6 @@ class RetrievalToolkit:
             return self.sources.git_show(repo, action.query or "HEAD", action.target)
         return []
 
-    def _execute_zowe(self, action: RetrievalAction, limit: int) -> list[SearchHit]:
-        system = (action.system or "").strip()
-        if not system:
-            return []
-        if action.tool == "zos_list_datasets":
-            return self.zowe.list_datasets(system, action.query or action.target, limit=max(20, limit * 8))
-        if action.tool == "zos_list_members":
-            return self.zowe.list_members(system, action.target, action.query or "*", limit=max(40, limit * 8))
-        if action.tool == "zos_read_dataset":
-            return self.zowe.read_dataset(system, action.target or action.query, start_line=action.start_line, end_line=action.end_line)
-        if action.tool == "zos_job_search":
-            # query = job prefix, target = owner filter
-            return self.zowe.search_jobs(system, prefix=action.query, owner=action.target)
-        if action.tool == "zos_job_status":
-            return self.zowe.job_status(system, action.target or action.query)
-        if action.tool == "zos_job_output":
-            value = action.target or action.query
-            jobid, spool_id = self._split_job_spool(value)
-            return self.zowe.job_output(system, jobid, spool_id)
-        if action.tool == "zos_system_logs":
-            # target = range such as 10m; query = optional local text filter.
-            return self.zowe.system_logs(system, action.target or "10m", query=action.query)
-        return []
-
-    @staticmethod
-    def _split_job_spool(value: str) -> tuple[str, int | None]:
-        value = value.strip()
-        if ":" not in value:
-            return value, None
-        jobid, raw_spool = value.rsplit(":", 1)
-        try:
-            return jobid, int(raw_spool)
-        except ValueError:
-            return value, None
-
     def _split_repo_target(self, value: str, explicit_repo: str | None) -> tuple[str | None, str]:
         value = value.strip()
         if explicit_repo:
@@ -256,9 +203,7 @@ class RetrievalAgent:
         source_names_fn = getattr(self.toolkit, "source_names", None)
         source_roots = ", ".join(source_names_fn()) if callable(source_names_fn) else "project and registered sources"
         live_state_fn = getattr(self.toolkit, "live_repository_state_text", None)
-        live_repository_state = live_state_fn() if purpose in {"change", "handoff"} and callable(live_state_fn) else ""
-        mainframe_fn = getattr(self.toolkit, "live_mainframe_sources_text", None)
-        live_mainframe_sources = mainframe_fn() if callable(mainframe_fn) else "No live Zowe systems configured."
+        live_repository_state = live_state_fn() if purpose in {"change", "implementation"} and callable(live_state_fn) else ""
         all_hits: list[SearchHit] = []
         executed: list[RetrievalAction] = []
         raw_rounds: list[str] = []
@@ -276,7 +221,6 @@ class RetrievalAgent:
                 f"CURRENT REQUEST:\n{query}\n\n"
                 f"RECENT CONVERSATION:\n{recent_conversation[-7000:]}\n\n"
                 f"REGISTERED READ-ONLY SOURCE ROOTS:\n{source_roots}\n\n"
-                f"REGISTERED LIVE MAINFRAME SOURCES (Zowe; read-only):\n{live_mainframe_sources}\n\n"
                 + (f"AUTHORITATIVE LIVE REPOSITORY STATE (all registered roots; independent of RAG):\n{live_repository_state}\n\n" if live_repository_state else "")
                 + f"ROUTED REPOSITORIES (boosts, not hard limits):\n{routed}\n\n"
                 f"RETRIEVAL ROUND: {round_no} of {max_rounds}\n\n"
@@ -285,8 +229,7 @@ class RetrievalAgent:
                 "Assess whether you have enough implementation/configuration/test context to answer or propose the change accurately. "
                 "If not, request the next read-only operations. Follow dependencies across registered source roots. "
                 "Do not ask the user to paste a file that can be found/read from a registered source root. "
-                "When the request depends on current z/OS data sets, jobs/spool, or system logs, use an appropriate live Zowe tool instead of relying on indexed context. "
-                + ("For change planning, do not declare sufficient until likely target files have been read live. For Git-backed target files, compare the working-tree file with git_show(HEAD, path) when material to the change. Live repository state above is authoritative; indexed Git metadata is historical only. " if purpose == "change" else "For an OpenCode handoff, do not declare sufficient until you have located the likely implementation/integration files and read the important target files live where possible. Follow cross-repository dependencies and identify concrete relative paths and symbols for the coding agent. " if purpose == "handoff" else "")
+                + ("For change planning, do not declare sufficient until likely target files have been read live. For Git-backed target files, compare the working-tree file with git_show(HEAD, path) when material to the change. Live repository state above is authoritative; indexed Git metadata is historical only. " if purpose == "change" else "For guided implementation, do not declare sufficient until you have located the likely target/integration files and read the important targets live where possible. Follow cross-repository dependencies and retrieve the exact code needed to author the next human-applied step. " if purpose == "implementation" else "")
             )
             try:
                 raw = self.model.complete(system, user)
@@ -305,7 +248,6 @@ class RetrievalAgent:
                     parsed.query,
                     parsed.target,
                     parsed.repo,
-                    parsed.system,
                     parsed.start_line,
                     parsed.end_line,
                     round_no,
@@ -349,10 +291,11 @@ class RetrievalAgent:
                 "Do not use indexed Git metadata as proof of current state. Before declaring sufficient, read likely target files from the live source root; for Git-backed target files use git_show with HEAD when you need the committed version for comparison. "
                 "You are not responsible for staging, hashing or applying a candidate diff during planning; the backend performs those steps only after approval."
             )
-        elif purpose == "handoff":
+        elif purpose == "implementation":
             purpose_rules = (
-                " HANDOFF-MODE RULES: Build a source-grounded implementation map for a separate coding agent. Locate likely target files, integration/configuration boundaries and tests across registered roots, then read the important files live where possible. "
-                "Prefer concrete repository names, relative paths and symbols. You are not responsible for editing, staging, hashing, testing, or applying changes."
+                " GUIDED-IMPLEMENTATION RULES: Locate the exact files, symbols, integration/configuration boundaries and tests needed for the next implementation step. "
+                "Read likely target files live before declaring sufficient, even when indexed snippets exist, because the final model may emit copy-pasteable replacement code. "
+                "Follow dependencies across registered roots and prefer concrete repository names, relative paths and symbols. You are not responsible for editing, staging, hashing, testing, or applying changes."
             )
         else:
             purpose_rules = ""
@@ -361,19 +304,14 @@ class RetrievalAgent:
             "You have standing READ-ONLY permission across the Project Assistant repo and all registered source repos/folders. "
             "You may continue retrieving until the available evidence is sufficient, but you must never request writes, arbitrary shell commands, or files outside registered roots. "
             "Return JSON only with shape "
-            '{"sufficient":false,"actions":[{"tool":"search_project|search_exact|find_symbol|find_references|list_files|find_files|grep_project|file_metadata|read_file|read_file_range|git_status|git_diff|git_log|git_show|zos_list_datasets|zos_list_members|zos_read_dataset|zos_job_search|zos_job_status|zos_job_output|zos_system_logs",'
-            '"query":"...","target":"...","repo":null,"system":null,"start_line":null,"end_line":null}]}. '
+            '{"sufficient":false,"actions":[{"tool":"search_project|search_exact|find_symbol|find_references|list_files|find_files|grep_project|file_metadata|read_file|read_file_range|git_status|git_diff|git_log|git_show",'
+            '"query":"...","target":"...","repo":null,"start_line":null,"end_line":null}]}. '
             f"Return at most {max_actions} actions per round. If enough context is already available, return "
             '{"sufficient":true,"actions":[]}. '
             "Tool guidance: repo is the registered source name. read_file/read_file_range/file_metadata require repo + relative target path. "
             "list_files uses target as a relative directory. find_files uses query as filename/glob and optional target directory. "
             "grep_project uses query as a case-insensitive literal and optional target directory. git_status/git_diff require only repo. "
             "git_log uses optional target path. git_show uses query as ref (usually HEAD) and target as relative file path. "
-            "Live Zowe tools require system to be one of the registered live mainframe systems. zos_list_datasets uses query as the data set pattern. "
-            "zos_list_members uses target as the PDS/PDSE and optional query as member pattern. zos_read_dataset uses target as data set or data set(member), with optional one-based start_line/end_line. "
-            "zos_job_search uses query as job-name prefix and optional target as owner. zos_job_status uses target as JOBID. zos_job_output uses target as JOBID or JOBID:spoolId. "
-            "zos_system_logs uses target as a short range such as 10m/2h and optional query as a local text filter. "
-            "Zowe tools are live read-only sources; no submit, cancel, upload, delete, console, SSH or arbitrary CLI tool exists. "
             "Prefer live read_file/read_file_range when an indexed snippet is incomplete or could be stale."
             + purpose_rules
         )
@@ -440,19 +378,16 @@ class RetrievalAgent:
             query = str(item.get("query") or "").strip()
             target = str(item.get("target") or "").strip()
             repo = str(item.get("repo") or "").strip() or None
-            system = str(item.get("system") or "").strip() or None
             if not query and not target and tool not in NO_TARGET_TOOLS:
                 continue
             if tool in {"git_status", "git_diff"} and not repo:
-                continue
-            if tool.startswith("zos_") and not system:
                 continue
             try:
                 start_line = int(item["start_line"]) if item.get("start_line") is not None else None
                 end_line = int(item["end_line"]) if item.get("end_line") is not None else None
             except (TypeError, ValueError):
                 start_line = end_line = None
-            result.append(RetrievalAction(tool, query, target, repo, system, start_line, end_line))
+            result.append(RetrievalAction(tool, query, target, repo, start_line, end_line))
         return result
 
     @staticmethod

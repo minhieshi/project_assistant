@@ -1,3 +1,16 @@
+# v0.8.0
+
+## 0.8.0 — Guided implementation and copy-paste code
+
+- Replaces the OpenCode-first handoff workflow with **Guided implementation** while keeping all registered source roots read-only.
+- Large implementation requests are decomposed into small steps; the assistant explains the plan and pauses before coding.
+- Confirmed steps use a dedicated implementation retrieval mode that re-opens likely target files live before code generation.
+- GPT may author complete source/config/test code for the human to copy into the repository, but it still cannot edit, stage, commit, build or test source itself.
+- Adds a strict copy-paste contract: exact repository/path/action metadata, complete new files or replacement units, no ellipsis/placeholders, and no diffs unless requested.
+- Removes the public implementation-brief endpoint and OpenCode mode from the web UI.
+- Adds response-level and fenced-code copy buttons.
+- Adds `--guided` to the CLI chat command.
+
 # v0.7.9
 
 ## 0.7.9 — Read-only project intelligence + OpenCode handoff

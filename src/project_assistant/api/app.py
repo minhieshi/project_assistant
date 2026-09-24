@@ -24,7 +24,6 @@ from .schemas import (
     ProjectUpdateRequest,
     ProjectConvertToSourceRequest,
     ProjectPathRequest,
-    ImplementationBriefRequest,
     QueryRequest,
     SourceRequest,
 )
@@ -72,10 +71,6 @@ def _project_info(project_id: str) -> dict:
         "sources": [
             {"name": source.name, "path": str(Path(source.path).expanduser().resolve())}
             for source in config.resolved_sources(path)
-        ],
-        "zowe_systems": [
-            {"name": system.name, "enabled": system.enabled, "allowed_tools": list(system.allowed_tools)}
-            for system in config.zowe_systems
         ],
     }
 
@@ -294,7 +289,7 @@ def stream_chat(project_id: str, conversation_id: str, body: ChatRequest):
 
     def generate() -> Iterable[str]:
         try:
-            for event in assistant.answer_stream(conversation_id, body.message):
+            for event in assistant.answer_stream(conversation_id, body.message, mode=body.mode):
                 if event[0] == "context":
                     compiled = event[1]
                     yield _sse(
@@ -304,7 +299,6 @@ def stream_chat(project_id: str, conversation_id: str, body: ChatRequest):
                             "routed_repos": list(compiled.routed_repos),
                             "rag_sources": list(compiled.rag_sources),
                             "graph_sources": list(compiled.graph_sources),
-                            "live_mainframe_sources": list(compiled.live_mainframe_sources),
                             "retrieval_queries": list(compiled.retrieval_queries),
                             "retrieval_actions": list(compiled.retrieval_actions),
                             "retrieval_warnings": list(compiled.retrieval_warnings),
@@ -320,30 +314,6 @@ def stream_chat(project_id: str, conversation_id: str, body: ChatRequest):
     return StreamingResponse(generate(), media_type="text/event-stream", headers={"Cache-Control": "no-store"})
 
 
-@app.post("/api/projects/{project_id}/conversations/{conversation_id}/implementation-brief")
-async def prepare_implementation_brief(project_id: str, conversation_id: str, body: ImplementationBriefRequest) -> dict:
-    try:
-        assistant = assistant_for(project_id)
-        brief, compiled, debug_path = await asyncio.to_thread(assistant.prepare_implementation_brief, conversation_id, body.focus)
-        return {
-            "brief": brief,
-            "context": {
-                "estimated_tokens": compiled.estimated_tokens,
-                "routed_repos": list(compiled.routed_repos),
-                "rag_sources": list(compiled.rag_sources),
-                "graph_sources": list(compiled.graph_sources),
-                "live_mainframe_sources": list(compiled.live_mainframe_sources),
-                "retrieval_queries": list(compiled.retrieval_queries),
-                "retrieval_actions": list(compiled.retrieval_actions),
-                "retrieval_warnings": list(compiled.retrieval_warnings),
-                "text": compiled.text,
-                "debug_path": str(debug_path),
-            },
-        }
-    except Exception as exc:
-        raise _error(exc)
-
-
 @app.post("/api/projects/{project_id}/context")
 async def inspect_context(project_id: str, body: QueryRequest) -> dict:
     try:
@@ -355,7 +325,6 @@ async def inspect_context(project_id: str, body: QueryRequest) -> dict:
             "routed_repos": list(compiled.routed_repos),
             "rag_sources": list(compiled.rag_sources),
             "graph_sources": list(compiled.graph_sources),
-            "live_mainframe_sources": list(compiled.live_mainframe_sources),
             "retrieval_queries": list(compiled.retrieval_queries),
             "retrieval_actions": list(compiled.retrieval_actions),
             "retrieval_warnings": list(compiled.retrieval_warnings),

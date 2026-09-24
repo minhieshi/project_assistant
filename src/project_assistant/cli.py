@@ -4,7 +4,7 @@ import argparse
 import json
 from pathlib import Path
 
-from .config import ProjectConfig, SourceRoot, ZoweSystem, init_project
+from .config import ProjectConfig, SourceRoot, init_project
 from .security import validate_source_root
 from .workspace import WorkspaceRegistry
 
@@ -46,17 +46,6 @@ def main() -> None:
     p_source.add_argument("path")
     p_source.add_argument("--name")
 
-    p_zowe_add = sub.add_parser("zowe-system-add", help="Register a read-only Zowe system/profile mapping")
-    p_zowe_add.add_argument("name")
-    p_zowe_add.add_argument("--base-profile")
-    p_zowe_add.add_argument("--zosmf-profile")
-    p_zowe_add.add_argument("--allow", nargs="+", choices=["datasets", "jobs", "logs"], default=["datasets", "jobs", "logs"])
-
-    p_zowe_remove = sub.add_parser("zowe-system-remove", help="Remove a Zowe system mapping")
-    p_zowe_remove.add_argument("name")
-
-    sub.add_parser("zowe-systems", help="List configured read-only Zowe systems")
-
     sub.add_parser("index")
     sub.add_parser("embedding-test", help="Test the configured embedding route with a fixed non-sensitive string")
     sub.add_parser("chat-test", help="Test the configured chat route, reasoning level, and streaming")
@@ -67,10 +56,7 @@ def main() -> None:
     p_chat = sub.add_parser("chat")
     p_chat.add_argument("conversation_id")
     p_chat.add_argument("message")
-
-    p_handoff = sub.add_parser("handoff", help="Prepare a read-only OpenCode implementation brief")
-    p_handoff.add_argument("conversation_id")
-    p_handoff.add_argument("--focus", default="")
+    p_chat.add_argument("--guided", action="store_true", help="Use step-by-step guided implementation mode")
 
     p_search = sub.add_parser("search")
     p_search.add_argument("query")
@@ -163,45 +149,6 @@ def main() -> None:
         print(f"Added source {name}: {path}")
         return
 
-    if args.command == "zowe-system-add":
-        config = ProjectConfig.load(project_dir)
-        name = args.name.strip()
-        if not name or any(ch not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-" for ch in name):
-            raise SystemExit("Zowe system name may contain only letters, numbers, '.', '_' and '-'")
-        if not args.base_profile and not args.zosmf_profile:
-            raise SystemExit("Provide --base-profile and/or --zosmf-profile so the system cannot fall through to an ambiguous default")
-        if any(item.name == name for item in config.zowe_systems):
-            raise SystemExit(f"Zowe system already exists: {name}")
-        config.zowe_systems.append(ZoweSystem(
-            name=name,
-            base_profile=args.base_profile,
-            zosmf_profile=args.zosmf_profile,
-            allowed_tools=list(dict.fromkeys(args.allow)),
-        ))
-        config.save(project_dir)
-        print(f"Added read-only Zowe system {name}: {', '.join(args.allow)}")
-        return
-
-    if args.command == "zowe-system-remove":
-        config = ProjectConfig.load(project_dir)
-        before = len(config.zowe_systems)
-        config.zowe_systems = [item for item in config.zowe_systems if item.name != args.name]
-        if len(config.zowe_systems) == before:
-            raise SystemExit(f"Unknown Zowe system: {args.name}")
-        config.save(project_dir)
-        print(f"Removed Zowe system {args.name}")
-        return
-
-    if args.command == "zowe-systems":
-        config = ProjectConfig.load(project_dir)
-        if not config.zowe_systems:
-            print("No Zowe systems configured.")
-            return
-        for item in config.zowe_systems:
-            status = "enabled" if item.enabled else "disabled"
-            print(f"{item.name}\t{status}\t{','.join(item.allowed_tools)}")
-        return
-
     # RAG/model dependencies are loaded only for commands that actually need
     # them. Project discovery remains available during partial configuration.
     from .assistant import ProjectAssistant
@@ -214,11 +161,8 @@ def main() -> None:
         print(conv.id)
         print(conv.path)
     elif args.command == "chat":
-        print(assistant.answer(args.conversation_id, args.message))
-    elif args.command == "handoff":
-        brief, compiled, debug_path = assistant.prepare_implementation_brief(args.conversation_id, args.focus)
-        print(brief)
-        print(f"\n[context snapshot: {debug_path}]", flush=True)
+        mode = "guided" if args.guided else "chat"
+        print(assistant.answer(args.conversation_id, args.message, mode=mode))
     elif args.command == "search":
         for hit in assistant.indexer.search(args.query):
             line = ""
