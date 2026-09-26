@@ -69,6 +69,10 @@ export type ContextSummary = {
 };
 
 
+export type ImplementationBriefResponse = {
+  brief: string;
+  context: ContextSummary;
+};
 
 export type AppStatus = {
   version: string;

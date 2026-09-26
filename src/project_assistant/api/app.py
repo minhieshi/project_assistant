@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import re
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Iterable
 
@@ -24,26 +26,13 @@ from .schemas import (
     ProjectUpdateRequest,
     ProjectConvertToSourceRequest,
     ProjectPathRequest,
+    ImplementationBriefRequest,
     QueryRequest,
     SourceRequest,
 )
 
 
 API_TOKEN = load_or_create_api_token()
-app = FastAPI(title="Local Project Assistant", version="0.8.0")
-app.add_middleware(TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost", "testserver"])
-
-
-@app.middleware("http")
-async def local_api_auth(request: Request, call_next):
-    if request.url.path.startswith("/api/"):
-        supplied = request.headers.get("x-project-assistant-token", "")
-        if not supplied or not tokens_equal(supplied, API_TOKEN):
-            return JSONResponse({"detail": "Unauthorised local API request"}, status_code=401)
-    response = await call_next(request)
-    response.headers["X-Content-Type-Options"] = "nosniff"
-    response.headers["Cache-Control"] = "no-store"
-    return response
 
 
 def _safe_error_message(exc: Exception) -> str:
@@ -86,9 +75,60 @@ def _sse(event: str, payload: dict | str) -> str:
     return f"event: {event}\ndata: {data}\n\n"
 
 
+async def _memory_consolidation_loop() -> None:
+    """Run due consolidations without making chat requests wait for them.
+
+    The loop checks hourly, but the consolidator itself only performs model work
+    once per configured interval (24 hours by default). If the app was stopped
+    overnight, the next startup catches up because the project remains due.
+    """
+    while True:
+        for project in registry.list():
+            try:
+                assistant = assistant_for(project.id)
+                if assistant.consolidator.due():
+                    await asyncio.to_thread(assistant.consolidate_memory)
+            except Exception:
+                # Memory maintenance must never take the local UI down. A manual
+                # consolidation can surface the concrete error when needed.
+                pass
+        await asyncio.sleep(3600)
+
+
+@asynccontextmanager
+async def _lifespan(app: FastAPI):
+    enabled = os.getenv("MEMORY_CONSOLIDATION_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
+    task = asyncio.create_task(_memory_consolidation_loop()) if enabled else None
+    try:
+        yield
+    finally:
+        if task is not None:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+
+app = FastAPI(title="Local Project Assistant", version="0.8.1", lifespan=_lifespan)
+app.add_middleware(TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost", "testserver"])
+
+
+@app.middleware("http")
+async def local_api_auth(request: Request, call_next):
+    if request.url.path.startswith("/api/"):
+        supplied = request.headers.get("x-project-assistant-token", "")
+        if not supplied or not tokens_equal(supplied, API_TOKEN):
+            return JSONResponse({"detail": "Unauthorised local API request"}, status_code=401)
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
 @app.get("/health")
 def health() -> dict:
-    return {"status": "ok", "version": "0.8.0"}
+    return {"status": "ok", "version": "0.8.1"}
 
 
 @app.get("/api/status")
@@ -98,7 +138,7 @@ def status() -> dict:
 
     settings = PortkeySettings.from_env()
     return {
-        "version": "0.8.0",
+        "version": "0.8.1",
         "projects_root": str(registry.projects_root),
         "portkey": {
             "base_url": settings.base_url,
@@ -244,6 +284,41 @@ def get_index_status(project_id: str) -> dict:
         raise _error(exc)
 
 
+@app.get("/api/projects/{project_id}/memory/status")
+def memory_status(project_id: str) -> dict:
+    try:
+        assistant = assistant_for(project_id)
+        state_path = assistant.config.project_path(assistant.project_dir, assistant.config.consolidation_state_path)
+        state = {}
+        if state_path.exists():
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+        return {
+            "due": assistant.consolidator.due(),
+            "interval_hours": assistant.config.consolidation_interval_hours,
+            "state": state,
+            "user_memory_path": str(assistant.config.project_path(assistant.project_dir, assistant.config.user_memory_path)),
+            "consolidation_dir": str(assistant.config.project_path(assistant.project_dir, assistant.config.consolidation_dir)),
+        }
+    except Exception as exc:
+        raise _error(exc)
+
+
+@app.post("/api/projects/{project_id}/memory/consolidate")
+async def consolidate_memory(project_id: str, force: bool = False) -> dict:
+    try:
+        assistant = assistant_for(project_id)
+        result = await asyncio.to_thread(assistant.consolidate_memory, force=force)
+        return {
+            "ran": result.ran,
+            "entries": result.entries,
+            "reason": result.reason,
+            "consolidation_path": str(result.consolidation_path) if result.consolidation_path else None,
+            "user_memory_path": str(result.user_memory_path) if result.user_memory_path else None,
+        }
+    except Exception as exc:
+        raise _error(exc)
+
+
 @app.get("/api/projects/{project_id}/conversations")
 def list_conversations(project_id: str) -> list[dict]:
     try:
@@ -289,7 +364,7 @@ def stream_chat(project_id: str, conversation_id: str, body: ChatRequest):
 
     def generate() -> Iterable[str]:
         try:
-            for event in assistant.answer_stream(conversation_id, body.message, mode=body.mode):
+            for event in assistant.answer_stream(conversation_id, body.message):
                 if event[0] == "context":
                     compiled = event[1]
                     yield _sse(
@@ -312,6 +387,29 @@ def stream_chat(project_id: str, conversation_id: str, body: ChatRequest):
             yield _sse("error", {"message": _safe_error_message(exc)})
 
     return StreamingResponse(generate(), media_type="text/event-stream", headers={"Cache-Control": "no-store"})
+
+
+@app.post("/api/projects/{project_id}/conversations/{conversation_id}/implementation-brief")
+async def prepare_implementation_brief(project_id: str, conversation_id: str, body: ImplementationBriefRequest) -> dict:
+    try:
+        assistant = assistant_for(project_id)
+        brief, compiled, debug_path = await asyncio.to_thread(assistant.prepare_implementation_brief, conversation_id, body.focus)
+        return {
+            "brief": brief,
+            "context": {
+                "estimated_tokens": compiled.estimated_tokens,
+                "routed_repos": list(compiled.routed_repos),
+                "rag_sources": list(compiled.rag_sources),
+                "graph_sources": list(compiled.graph_sources),
+                "retrieval_queries": list(compiled.retrieval_queries),
+                "retrieval_actions": list(compiled.retrieval_actions),
+                "retrieval_warnings": list(compiled.retrieval_warnings),
+                "text": compiled.text,
+                "debug_path": str(debug_path),
+            },
+        }
+    except Exception as exc:
+        raise _error(exc)
 
 
 @app.post("/api/projects/{project_id}/context")

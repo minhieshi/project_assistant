@@ -203,7 +203,7 @@ class RetrievalAgent:
         source_names_fn = getattr(self.toolkit, "source_names", None)
         source_roots = ", ".join(source_names_fn()) if callable(source_names_fn) else "project and registered sources"
         live_state_fn = getattr(self.toolkit, "live_repository_state_text", None)
-        live_repository_state = live_state_fn() if purpose in {"change", "implementation"} and callable(live_state_fn) else ""
+        live_repository_state = live_state_fn() if purpose in {"change", "handoff"} and callable(live_state_fn) else ""
         all_hits: list[SearchHit] = []
         executed: list[RetrievalAction] = []
         raw_rounds: list[str] = []
@@ -229,7 +229,7 @@ class RetrievalAgent:
                 "Assess whether you have enough implementation/configuration/test context to answer or propose the change accurately. "
                 "If not, request the next read-only operations. Follow dependencies across registered source roots. "
                 "Do not ask the user to paste a file that can be found/read from a registered source root. "
-                + ("For change planning, do not declare sufficient until likely target files have been read live. For Git-backed target files, compare the working-tree file with git_show(HEAD, path) when material to the change. Live repository state above is authoritative; indexed Git metadata is historical only. " if purpose == "change" else "For guided implementation, do not declare sufficient until you have located the likely target/integration files and read the important targets live where possible. Follow cross-repository dependencies and retrieve the exact code needed to author the next human-applied step. " if purpose == "implementation" else "")
+                + ("For change planning, do not declare sufficient until likely target files have been read live. For Git-backed target files, compare the working-tree file with git_show(HEAD, path) when material to the change. Live repository state above is authoritative; indexed Git metadata is historical only. " if purpose == "change" else "For an OpenCode handoff, do not declare sufficient until you have located the likely implementation/integration files and read the important target files live where possible. Follow cross-repository dependencies and identify concrete relative paths and symbols for the coding agent. " if purpose == "handoff" else "")
             )
             try:
                 raw = self.model.complete(system, user)
@@ -291,11 +291,10 @@ class RetrievalAgent:
                 "Do not use indexed Git metadata as proof of current state. Before declaring sufficient, read likely target files from the live source root; for Git-backed target files use git_show with HEAD when you need the committed version for comparison. "
                 "You are not responsible for staging, hashing or applying a candidate diff during planning; the backend performs those steps only after approval."
             )
-        elif purpose == "implementation":
+        elif purpose == "handoff":
             purpose_rules = (
-                " GUIDED-IMPLEMENTATION RULES: Locate the exact files, symbols, integration/configuration boundaries and tests needed for the next implementation step. "
-                "Read likely target files live before declaring sufficient, even when indexed snippets exist, because the final model may emit copy-pasteable replacement code. "
-                "Follow dependencies across registered roots and prefer concrete repository names, relative paths and symbols. You are not responsible for editing, staging, hashing, testing, or applying changes."
+                " HANDOFF-MODE RULES: Build a source-grounded implementation map for a separate coding agent. Locate likely target files, integration/configuration boundaries and tests across registered roots, then read the important files live where possible. "
+                "Prefer concrete repository names, relative paths and symbols. You are not responsible for editing, staging, hashing, testing, or applying changes."
             )
         else:
             purpose_rules = ""

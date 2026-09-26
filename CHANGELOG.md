@@ -1,15 +1,25 @@
+# v0.8.1
+
+## 0.8.1 — MCP credential foundation on v0.8.0 memory
+
+- Builds on v0.8.0 without changing the consolidated conversation memory layer.
+- Adds a reusable MCP credential-store abstraction for upcoming remote MCP connectivity.
+- Uses the native macOS Keychain by default on macOS; OAuth bundles are stored as generic-password items and never written to project configuration.
+- Stores access token, refresh token, expiry and client-registration metadata together as opaque JSON for OAuth refresh/re-authentication flows.
+- Adds an explicit private-file fallback (`PROJECT_ASSISTANT_MCP_AUTH_STORE=file`) for development/non-macOS use; the file is restricted to mode 0600.
+- Keeps credential lookup failures separate from project/retrieval state so future remote MCP connections can surface `authentication required` cleanly.
+
 # v0.8.0
 
-## 0.8.0 — Guided implementation and copy-paste code
+## 0.8.0 — Consolidated conversation memory
 
-- Replaces the OpenCode-first handoff workflow with **Guided implementation** while keeping all registered source roots read-only.
-- Large implementation requests are decomposed into small steps; the assistant explains the plan and pauses before coding.
-- Confirmed steps use a dedicated implementation retrieval mode that re-opens likely target files live before code generation.
-- GPT may author complete source/config/test code for the human to copy into the repository, but it still cannot edit, stage, commit, build or test source itself.
-- Adds a strict copy-paste contract: exact repository/path/action metadata, complete new files or replacement units, no ellipsis/placeholders, and no diffs unless requested.
-- Removes the public implementation-brief endpoint and OpenCode mode from the web UI.
-- Adds response-level and fenced-code copy buttons.
-- Adds `--guided` to the CLI chat command.
+- Added incremental 24-hour conversation consolidation using only entries since the previous successful consolidation.
+- Added generated daily consolidation Markdown and derived user-memory Markdown.
+- Context compilation now prefers user memory + consolidated history and filters raw conversation/generated memory out of normal project-code RAG.
+- Raw historical chat remains indexed only as a fallback for exact-history recall or when no consolidation exists.
+- Added manual CLI/API consolidation and memory status endpoints.
+- Added an in-process hourly due check; actual model consolidation is limited to once per configured 24-hour interval unless manually forced.
+- Added tests for incremental consolidation, 24-hour due logic and memory-aware context retrieval.
 
 # v0.7.9
 

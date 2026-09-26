@@ -14,7 +14,7 @@ HEADER_RE = re.compile(r"^## (?P<title>.+?) · (?P<timestamp>[^\n]+)$", re.MULTI
 
 
 def utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+    return datetime.now(timezone.utc).isoformat(timespec="microseconds")
 
 
 def _slug(text: str) -> str:

@@ -6,6 +6,7 @@ import type {
   ProjectConversion,
   AppStatus,
   IndexStatus,
+  ImplementationBriefResponse,
 } from "./types";
 
 const API_BASE = "/api/backend";
@@ -44,6 +45,7 @@ export const api = {
   conversations: (id: string) => request<ConversationSummary[]>(`/projects/${id}/conversations`),
   createConversation: (id: string, title: string) => request<ConversationSummary>(`/projects/${id}/conversations`, { method: "POST", body: JSON.stringify({ title }) }),
   conversation: (projectId: string, conversationId: string) => request<ConversationDetail>(`/projects/${projectId}/conversations/${conversationId}`),
+  implementationBrief: (projectId: string, conversationId: string, focus = "") => request<ImplementationBriefResponse>(`/projects/${projectId}/conversations/${conversationId}/implementation-brief`, { method: "POST", body: JSON.stringify({ focus }) }),
   inspectContext: (projectId: string, query: string, conversationId?: string) => request<ContextSummary>(`/projects/${projectId}/context`, { method: "POST", body: JSON.stringify({ query, conversation_id: conversationId ?? null }) }),
 };
 
@@ -55,11 +57,11 @@ export type StreamCallbacks = {
   onDone?: () => void;
 };
 
-export async function streamChat(projectId: string, conversationId: string, message: string, mode: "chat" | "guided", callbacks: StreamCallbacks) {
+export async function streamChat(projectId: string, conversationId: string, message: string, callbacks: StreamCallbacks) {
   const response = await fetch(`${API_BASE}/projects/${projectId}/conversations/${conversationId}/stream`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ message, mode }),
+    body: JSON.stringify({ message }),
     cache: "no-store",
   });
   if (!response.ok || !response.body) {

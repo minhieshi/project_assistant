@@ -9,6 +9,7 @@ from .context_compiler import ContextCompiler
 from .conversations import ConversationStore
 from .indexing import IncrementalIndexer
 from .knowledge_graph import KnowledgeGraph
+from .memory import MemoryConsolidator, ConsolidationResult
 from .portkey import ChatModel, PortkeyChatModel, get_embedding_function
 from .retrieval_agent import RetrievalAgent, RetrievalToolkit
 from .security import private_file
@@ -16,56 +17,16 @@ from .source_access import RegisteredSourceAccess
 
 
 READ_ONLY_PROJECT_INTELLIGENCE = """
-PROJECT ASSISTANT ROLE — READ-ONLY PROJECT INTELLIGENCE + CODE AUTHORING
+PROJECT ASSISTANT ROLE — READ-ONLY PROJECT INTELLIGENCE
 - You may inspect indexed and live content under the Project Assistant workspace and registered source roots.
 - Never claim to have modified source code, configuration, Git state, or the working tree.
-- You may author complete source code, configuration, tests and validation commands for the user to copy into their repository.
-- Project Assistant is responsible for understanding the project: retrieval, architecture, integration analysis, debugging context, design reasoning, implementation planning and source-grounded code generation.
-- Keep the human as the write boundary: describe exactly what should change, but do not claim to apply, stage, commit, build or test it.
-- When recommending or generating implementation work, identify repositories, relative paths, symbols/components, constraints, validation steps and uncertainties.
+- Project Assistant is responsible for understanding the project: retrieval, architecture, integration analysis, debugging context, design reasoning, and implementation planning.
+- A separate coding agent (OpenCode) is responsible for edits, shell commands, builds, tests, commits, and other source mutations.
+- When recommending implementation work, identify repositories, relative paths, symbols/components, constraints, validation steps, and uncertainties so the work can be handed off cleanly.
 """.strip()
 
-GUIDED_IMPLEMENTATION = """
-GUIDED IMPLEMENTATION MODE — HUMAN-APPLIED CHANGES
-Your job is to recreate a high-quality GPT coding conversation while the application itself remains read-only.
-
-WORKFLOW
-1. For a new non-trivial implementation request, first understand enough of the whole task to break it into 2-6 small, coherent steps.
-2. Explain the overall approach and why the first step comes first.
-3. STOP before writing implementation code. Ask the user to confirm the first step or choose a different step.
-4. When the user explicitly confirms (for example: "yes", "do step 1", "next", "implement it" in the context of an already-agreed plan), implement ONE step only.
-5. Before implementing that step, rely on the live source retrieved for this turn. Do not assume files are unchanged merely because they appeared earlier in the conversation.
-6. After emitting the code for that step, explain what changed, give validation commands/checks, and STOP for user input before moving to the next step.
-7. If the user pastes an error or asks for a correction, fix the current step before advancing.
-
-SMALL TASK EXCEPTION
-- A genuinely small, self-contained change that is clearly one atomic step may be implemented immediately when the user explicitly asks for the code. Still explain the change briefly and keep the response scoped to that one step.
-
-COPY-PASTE CODE CONTRACT
-For every changed artefact, state:
-- Repository: <registered repository name>
-- File: <relative/path>
-- Action: Create file | Replace file | Replace function/class/section | Insert after/before <exact anchor>
-- Why: one short reason
-
-Then provide code that can actually be pasted:
-- New file: provide the complete file.
-- Small/medium existing file: prefer the complete replacement file when practical.
-- Large existing file: provide a complete replacement function, class or contiguous section and an exact stable anchor.
-- If one atomic step necessarily spans several files, include every file required for that step.
-- Never use placeholders such as "...", "existing code", "rest unchanged", pseudo-code, or omitted imports inside a replacement block.
-- Never emit a diff unless the user explicitly asks for a diff.
-- Preserve project style and existing interfaces unless the requested change requires otherwise.
-
-GROUNDING AND SAFETY
-- Retrieved source is the primary project evidence.
-- Never invent a path, symbol, API or dependency that was not verified or clearly labelled as a proposal.
-- If a required target file cannot be retrieved live, say exactly which artefact is missing and do not fabricate replacement code for it.
-- Do not claim to run commands, tests or builds. Validation commands are instructions for the user.
-""".strip()
-
-
-# Retained only for backwards-compatible internal proposal objects from older releases.
+# Retained only for backwards-compatible internal proposal objects from older
+# releases. The v0.8.0 API/UI no longer exposes source mutation.
 CHANGE_CONTROL = READ_ONLY_PROJECT_INTELLIGENCE
 
 
@@ -78,6 +39,7 @@ class ProjectAssistant:
     compiler: ContextCompiler
     model: ChatModel
     retrieval_agent: RetrievalAgent
+    consolidator: MemoryConsolidator
 
     @classmethod
     def build(cls, project_dir: Path, model: ChatModel | None = None, embedding_function=None) -> "ProjectAssistant":
@@ -102,7 +64,20 @@ class ProjectAssistant:
         chat_model = model or PortkeyChatModel(settings)
         toolkit = RetrievalToolkit(project_dir, config, indexer, graph)
         retrieval_agent = RetrievalAgent(chat_model, toolkit)
-        return cls(project_dir, config, conversations, indexer, compiler, chat_model, retrieval_agent)
+        consolidator = MemoryConsolidator(
+            project_dir,
+            conversations,
+            chat_model,
+            indexer.index_specific_file,
+            consolidation_dir=config.project_path(project_dir, config.consolidation_dir),
+            user_memory_path=config.project_path(project_dir, config.user_memory_path),
+            state_path=config.project_path(project_dir, config.consolidation_state_path),
+            interval_hours=config.consolidation_interval_hours,
+        )
+        return cls(project_dir, config, conversations, indexer, compiler, chat_model, retrieval_agent, consolidator)
+
+    def consolidate_memory(self, *, force: bool = False) -> ConsolidationResult:
+        return self.consolidator.consolidate(force=force)
 
     def compile_context(self, query: str, conversation_id: str | None = None, *, agentic: bool = True, purpose: str = "answer"):
         seed = self.compiler.initial_retrieval(query, conversation_id)
@@ -141,12 +116,9 @@ class ProjectAssistant:
             retrieval_warnings=agent_warnings,
         )
 
-    def _prepare_answer(self, conversation_id: str, user_text: str, mode: str = "chat"):
-        if mode not in {"chat", "guided"}:
-            raise ValueError(f"Unsupported chat mode: {mode}")
+    def _prepare_answer(self, conversation_id: str, user_text: str):
         self.conversations.append(conversation_id, "user", user_text)
-        purpose = "implementation" if mode == "guided" else "answer"
-        context = self.compile_context(user_text, conversation_id, agentic=True, purpose=purpose)
+        context = self.compile_context(user_text, conversation_id, agentic=True)
         self.compiler.write_debug_snapshot(context)
         retrieval_rules = (
             "PROJECT RETRIEVAL — IMPORTANT\n"
@@ -158,25 +130,23 @@ class ProjectAssistant:
             "- Never claim you read a file unless it appears in retrieved context."
         )
         system = self._system_prompt() + "\n\n" + READ_ONLY_PROJECT_INTELLIGENCE + "\n\n" + retrieval_rules
-        if mode == "guided":
-            system += "\n\n" + GUIDED_IMPLEMENTATION
         user = f"{context.text}\n\n## CURRENT USER REQUEST\n\n{user_text}"
         return context, system, user
 
-    def answer(self, conversation_id: str, user_text: str, mode: str = "chat") -> str:
-        context, system, user = self._prepare_answer(conversation_id, user_text, mode=mode)
+    def answer(self, conversation_id: str, user_text: str) -> str:
+        context, system, user = self._prepare_answer(conversation_id, user_text)
         response = self.model.complete(system, user)
         path = self.conversations.append(conversation_id, "assistant", response)
         self._safe_index(path)
         return response
 
-    def answer_stream(self, conversation_id: str, user_text: str, mode: str = "chat"):
+    def answer_stream(self, conversation_id: str, user_text: str):
         """Yield (event, payload) tuples while preserving Markdown-first history.
 
         The user message is written before inference. The assistant message is only
         appended after a complete response has been received.
         """
-        context, system, user = self._prepare_answer(conversation_id, user_text, mode=mode)
+        context, system, user = self._prepare_answer(conversation_id, user_text)
         yield ("context", context)
         chunks: list[str] = []
         streamer = getattr(self.model, "stream", None)
@@ -193,6 +163,78 @@ class ProjectAssistant:
         self._safe_index(path)
         yield ("done", response)
 
+
+    def prepare_implementation_brief(self, conversation_id: str, focus: str = ""):
+        """Create a source-grounded handoff for a separate coding agent.
+
+        This is deliberately read-only. It may retrieve indexed content and live
+        files/Git metadata, but it never stages, hashes, applies, or writes source
+        changes. The resulting brief is persisted in the conversation so project
+        design decisions remain part of the knowledge base.
+        """
+        recent = self.conversations.recent_text(conversation_id, max_chars=18000)
+        entries = self.conversations.entries(conversation_id)
+        recent_user = [entry.body for entry in entries if entry.role == "user"][-5:]
+        retrieval_focus = focus.strip() or "\n\n".join(recent_user).strip()
+        if not retrieval_focus:
+            retrieval_focus = "Prepare an implementation handoff for the issue discussed in this conversation."
+        query = (
+            "Prepare a coding-agent implementation handoff for the project issue below. "
+            "Find the concrete repositories, files, symbols, integration boundaries, configuration and tests needed to implement it safely.\n\n"
+            + retrieval_focus[-12000:]
+        )
+        context = self.compile_context(query, conversation_id, agentic=True, purpose="handoff")
+        debug_path = self.compiler.write_debug_snapshot(context)
+        live_state = self._live_git_state_all_sources()
+        system = (
+            self._system_prompt()
+            + "\n\n"
+            + READ_ONLY_PROJECT_INTELLIGENCE
+            + "\n\n"
+            + "You are preparing a concise, source-grounded implementation brief for OpenCode, a separate coding agent. "
+              "Do not generate a patch and do not claim any file was changed. Prefer repository + relative path + symbol references over copying large source blocks. "
+              "Separate verified project evidence from inference and explicitly list unresolved questions when the retrieved material is insufficient."
+        )
+        user = f"""{context.text}
+
+## RECENT PROJECT CONVERSATION
+
+{recent}
+
+## OPTIONAL HANDOFF FOCUS
+
+{focus.strip() or '(use the current conversation as the focus)'}
+
+## LIVE REGISTERED SOURCE STATE
+
+{live_state}
+
+## OUTPUT FORMAT
+
+Return Markdown with these sections, omitting only sections that truly do not apply:
+
+# OpenCode implementation brief
+## Problem / desired outcome
+## Current understanding / root cause
+## Integration path
+## Relevant repositories and files
+For each relevant file: repository, relative path, important symbol/section, and why it matters.
+## Recommended implementation direction
+Give ordered implementation steps, but no patch.
+## Constraints and behaviours to preserve
+## Validation / tests
+## Uncertainties or checks for OpenCode
+## Retrieval evidence
+List the most useful source paths/symbols that grounded the brief.
+
+End with: "OpenCode: re-open the referenced live files and verify the working tree before editing."
+"""
+        brief = self.model.complete(system, user)
+        if focus.strip():
+            self.conversations.append_event(conversation_id, "Handoff Focus", focus.strip())
+        path = self.conversations.append_event(conversation_id, "OpenCode Implementation Brief", brief)
+        self._safe_index(path)
+        return brief, context, debug_path
 
     def _live_git_state_all_sources(self) -> str:
         """Return authoritative live state for every registered source root.

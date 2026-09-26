@@ -47,6 +47,8 @@ def main() -> None:
     p_source.add_argument("--name")
 
     sub.add_parser("index")
+    p_consolidate = sub.add_parser("consolidate", help="Run conversation consolidation and update user memory when due")
+    p_consolidate.add_argument("--force", action="store_true", help="Run even when the 24-hour interval has not elapsed")
     sub.add_parser("embedding-test", help="Test the configured embedding route with a fixed non-sensitive string")
     sub.add_parser("chat-test", help="Test the configured chat route, reasoning level, and streaming")
 
@@ -56,7 +58,10 @@ def main() -> None:
     p_chat = sub.add_parser("chat")
     p_chat.add_argument("conversation_id")
     p_chat.add_argument("message")
-    p_chat.add_argument("--guided", action="store_true", help="Use step-by-step guided implementation mode")
+
+    p_handoff = sub.add_parser("handoff", help="Prepare a read-only OpenCode implementation brief")
+    p_handoff.add_argument("conversation_id")
+    p_handoff.add_argument("--focus", default="")
 
     p_search = sub.add_parser("search")
     p_search.add_argument("query")
@@ -156,13 +161,25 @@ def main() -> None:
 
     if args.command == "index":
         print(json.dumps(assistant.indexer.index_changed(), indent=2))
+    elif args.command == "consolidate":
+        result = assistant.consolidate_memory(force=args.force)
+        print(json.dumps({
+            "ran": result.ran,
+            "entries": result.entries,
+            "reason": result.reason,
+            "consolidation_path": str(result.consolidation_path) if result.consolidation_path else None,
+            "user_memory_path": str(result.user_memory_path) if result.user_memory_path else None,
+        }, indent=2))
     elif args.command == "chat-new":
         conv = assistant.conversations.create(args.title)
         print(conv.id)
         print(conv.path)
     elif args.command == "chat":
-        mode = "guided" if args.guided else "chat"
-        print(assistant.answer(args.conversation_id, args.message, mode=mode))
+        print(assistant.answer(args.conversation_id, args.message))
+    elif args.command == "handoff":
+        brief, compiled, debug_path = assistant.prepare_implementation_brief(args.conversation_id, args.focus)
+        print(brief)
+        print(f"\n[context snapshot: {debug_path}]", flush=True)
     elif args.command == "search":
         for hit in assistant.indexer.search(args.query):
             line = ""

@@ -422,7 +422,7 @@ class WebFoundationTests(unittest.TestCase):
     def test_api_app_imports_without_initialising_rag(self):
         from project_assistant.api.app import app
 
-        self.assertEqual(app.version, "0.8.0")
+        self.assertEqual(app.version, "0.8.1")
 
     def test_portkey_url_is_explicit_and_does_not_default_public(self):
         from project_assistant.config import PortkeySettings
@@ -440,12 +440,11 @@ class WebFoundationTests(unittest.TestCase):
         response = client.get("/api/projects", headers={"x-project-assistant-token": API_TOKEN})
         self.assertEqual(response.status_code, 200)
 
-    def test_v080_public_api_is_read_only_for_source_repositories(self):
+    def test_v079_public_api_is_read_only_for_source_repositories(self):
         from project_assistant.api.app import app
 
         paths = {route.path for route in app.routes}
-        self.assertIn("/api/projects/{project_id}/conversations/{conversation_id}/stream", paths)
-        self.assertNotIn("/api/projects/{project_id}/conversations/{conversation_id}/implementation-brief", paths)
+        self.assertIn("/api/projects/{project_id}/conversations/{conversation_id}/implementation-brief", paths)
         self.assertFalse(any("/proposals" in path for path in paths))
         self.assertFalse(any("stage-patch" in path or "approve-patch" in path or path.endswith("/apply") for path in paths))
 
@@ -1082,7 +1081,7 @@ class MultiRoundRetrievalTests(unittest.TestCase):
         self.assertIn("Git not applicable", model.user)
         self.assertIn("not responsible for staging, hashing or applying", model.system)
 
-    def test_guided_implementation_requires_live_file_oriented_context_and_has_no_mutation_role(self):
+    def test_handoff_mode_requires_live_file_oriented_context_and_has_no_mutation_role(self):
         from project_assistant.retrieval_agent import RetrievalAgent
 
         class FakeModel:
@@ -1104,15 +1103,14 @@ class MultiRoundRetrievalTests(unittest.TestCase):
 
         model = FakeModel()
         agent = RetrievalAgent(model, FakeToolkit())  # type: ignore[arg-type]
-        agent.plan_and_retrieve("implement the next step", "recent plan", [], [], purpose="implementation")
-        self.assertIn("GUIDED-IMPLEMENTATION RULES", model.system)
-        self.assertIn("read likely target files", model.system.lower())
-        self.assertIn("read the important targets live", model.user)
+        agent.plan_and_retrieve("prepare implementation handoff", "recent", [], [], purpose="handoff")
+        self.assertIn("HANDOFF-MODE RULES", model.system)
+        self.assertIn("not responsible for editing, staging, hashing, testing, or applying changes", model.system)
+        self.assertIn("likely implementation/integration files", model.user)
         self.assertIn("HEAD=abc123", model.user)
 
-
-class GuidedImplementationTests(unittest.TestCase):
-    def test_guided_mode_adds_stepwise_copy_paste_contract_and_implementation_retrieval(self):
+class ImplementationBriefTests(unittest.TestCase):
+    def test_brief_is_persisted_as_conversation_event_without_source_mutation(self):
         import sys
         import types
         from types import SimpleNamespace
@@ -1124,29 +1122,33 @@ class GuidedImplementationTests(unittest.TestCase):
         with patch.dict(sys.modules, {"langchain_chroma": fake_chroma, "langchain_core.documents": fake_docs, "fitz": fake_fitz}):
             from project_assistant.assistant import ProjectAssistant
 
+        class FakeModel:
+            def complete(self, system, user):
+                self.system = system
+                self.user = user
+                return "# OpenCode implementation brief\n\n## Problem / desired outcome\nFix the integration.\n\nOpenCode: re-open the referenced live files and verify the working tree before editing."
+
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             store = ConversationStore(root / ".assistant/conversations")
-            conv = store.create("Guided change")
+            conv = store.create("Integration issue")
+            store.append(conv.id, "user", "Trace the failing integration")
             assistant = object.__new__(ProjectAssistant)
             assistant.project_dir = root
             assistant.conversations = store
+            assistant.model = FakeModel()
             assistant._system_prompt = lambda: "You are a senior software engineer."
             assistant.compiler = SimpleNamespace(write_debug_snapshot=lambda context: root / ".assistant/context.md")
-            seen = {}
-            def compile_context(query, conversation_id, **kwargs):
-                seen.update(kwargs)
-                return SimpleNamespace(text="live target source")
-            assistant.compile_context = compile_context
-
-            _context, system, user = assistant._prepare_answer(conv.id, "Implement the feature", mode="guided")
-            self.assertEqual(seen.get("purpose"), "implementation")
-            self.assertIn("GUIDED IMPLEMENTATION MODE", system)
-            self.assertIn("STOP before writing implementation code", system)
-            self.assertIn("Repository: <registered repository name>", system)
-            self.assertIn('Never use placeholders such as "..."', system)
-            self.assertIn("live target source", user)
-            self.assertEqual(store.entries(conv.id)[-1].body, "Implement the feature")
+            assistant.compile_context = lambda *args, **kwargs: SimpleNamespace(text="retrieved live evidence")
+            assistant._live_git_state_all_sources = lambda: "- repo: branch=main; HEAD=abc; working_tree=clean"
+            assistant._safe_index = lambda path: None
+            brief, _context, debug_path = assistant.prepare_implementation_brief(conv.id, "focus here")
+            self.assertIn("OpenCode implementation brief", brief)
+            self.assertEqual(debug_path, root / ".assistant/context.md")
+            entries = store.entries(conv.id)
+            self.assertTrue(any(entry.title == "Handoff Focus" and entry.body == "focus here" for entry in entries))
+            self.assertTrue(any(entry.title == "OpenCode Implementation Brief" and "Fix the integration" in entry.body for entry in entries))
+            self.assertIn("Do not generate a patch", assistant.model.system)
 
 
 class GitStateRefreshTests(unittest.TestCase):
@@ -1237,3 +1239,136 @@ class ProposalGitVerificationTests(unittest.TestCase):
             self.assertIn("repo: branch=", snapshot)
             self.assertIn(f"HEAD={head}", snapshot)
             self.assertIn("working_tree=clean", snapshot)
+
+
+class MemoryConsolidationTests(unittest.TestCase):
+    def test_consolidation_is_incremental_and_updates_user_memory(self):
+        from datetime import datetime, timedelta, timezone
+        from project_assistant.memory import MemoryConsolidator
+
+        class FakeModel:
+            def __init__(self):
+                self.calls = []
+            def complete(self, system, user):
+                self.calls.append((system, user))
+                if "CURRENT USER MEMORY" in user:
+                    return "## Engineering preferences\n\n- Prefer the smallest viable implementation and add complexity only when needed."
+                return (
+                    "## What we accomplished\n\n- Implemented the simple path.\n\n"
+                    "## Superseded or rejected approaches\n\n- Rejected unnecessary abstraction.\n\n"
+                    "## User working preferences observed\n\n- Repeatedly asks to simplify before adding robustness."
+                )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            store = ConversationStore(root / ".assistant/conversations")
+            conv = store.create("Memory work")
+            store.append(conv.id, "user", "Simplify this. Start with one function call.")
+            store.append(conv.id, "assistant", "Implemented the direct path.")
+            indexed = []
+            model = FakeModel()
+            manager = MemoryConsolidator(
+                root,
+                store,
+                model,
+                indexed.append,
+                consolidation_dir=root / ".assistant/generated/consolidations",
+                user_memory_path=root / ".assistant/generated/user_memory.md",
+                state_path=root / ".assistant/consolidation_state.json",
+                interval_hours=24,
+            )
+            first = manager.consolidate(force=True, now=datetime.now(timezone.utc) + timedelta(minutes=1))
+            self.assertTrue(first.ran)
+            self.assertEqual(first.entries, 2)
+            self.assertTrue(first.consolidation_path and first.consolidation_path.exists())
+            self.assertIn("Rejected unnecessary abstraction", first.consolidation_path.read_text())
+            self.assertIn("smallest viable implementation", manager.read_user_memory())
+            self.assertEqual(len(indexed), 2)
+
+            store.append(conv.id, "user", "Now add the next small step.")
+            second = manager.consolidate(force=True, now=datetime.now(timezone.utc) + timedelta(minutes=2))
+            self.assertTrue(second.ran)
+            self.assertEqual(second.entries, 1)
+            self.assertIn("Now add the next small step", model.calls[-2][1])
+            self.assertNotIn("Simplify this", model.calls[-2][1])
+
+    def test_due_respects_24_hour_interval(self):
+        from datetime import datetime, timedelta, timezone
+        from project_assistant.memory import MemoryConsolidator
+
+        class FakeModel:
+            def complete(self, system, user):
+                return "memory"
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            store = ConversationStore(root / ".assistant/conversations")
+            manager = MemoryConsolidator(
+                root,
+                store,
+                FakeModel(),
+                lambda path: None,
+                consolidation_dir=root / ".assistant/generated/consolidations",
+                user_memory_path=root / ".assistant/generated/user_memory.md",
+                state_path=root / ".assistant/consolidation_state.json",
+                interval_hours=24,
+            )
+            now = datetime(2026, 9, 26, 12, tzinfo=timezone.utc)
+            manager._save_state({"last_run_at": now.isoformat()})
+            self.assertFalse(manager.due(now + timedelta(hours=23, minutes=59)))
+            self.assertTrue(manager.due(now + timedelta(hours=24)))
+
+    def test_context_prefers_consolidation_and_filters_raw_from_project_rag(self):
+        from project_assistant.config import ProjectConfig
+        from project_assistant.context_compiler import ContextCompiler
+        from project_assistant.retrieval_types import SearchHit
+
+        class FakeCatalog:
+            def route(self, *args, **kwargs):
+                return []
+
+        class FakeIndexer:
+            def __init__(self):
+                self.catalog = FakeCatalog()
+            def vector_search(self, query, k=10):
+                return [
+                    SearchHit("raw old chat", {"id": "raw", "repo": "project", "relative_path": ".assistant/conversations/old.md", "source": "/p/.assistant/conversations/old.md"}, 1, ("vector",)),
+                    SearchHit("real project code", {"id": "code", "repo": "project", "relative_path": "src/a.py", "source": "/p/src/a.py"}, 1, ("vector",)),
+                ]
+            def lexical_search(self, query, k=10):
+                return []
+            def exact_search(self, query, k=10):
+                return []
+            def fuse(self, vector, lexical, exact, limit):
+                return (vector + lexical + exact)[:limit]
+            def chunks_for_locations(self, locations, limit=20):
+                return []
+            def chunks_for_sources(self, paths, limit=20):
+                return []
+            def search_assistant_kind(self, query, kind, k=8):
+                if kind == "daily_consolidation":
+                    return [SearchHit("accepted decision from consolidation", {"id": "c1", "repo": "project", "relative_path": ".assistant/generated/consolidations/2026-09-26.md", "source": "/p/.assistant/generated/consolidations/2026-09-26.md"}, 1, ("lexical",))]
+                return []
+
+        class FakeGraph:
+            def search(self, query, limit=10):
+                return []
+            def related_locations(self, hits, limit=10):
+                return []
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "PROJECT.md").write_text("project memory")
+            generated = root / ".assistant/generated"
+            generated.mkdir(parents=True)
+            (generated / "user_memory.md").write_text("# User Memory\n\nPrefer simple implementations.")
+            store = ConversationStore(root / ".assistant/conversations")
+            conv = store.create("Current")
+            store.append(conv.id, "user", "current request")
+            compiler = ContextCompiler(root, ProjectConfig(name="x"), FakeIndexer(), store, FakeGraph())  # type: ignore[arg-type]
+            compiled = compiler.compile("how does this work", conv.id)
+            self.assertIn("CONSOLIDATED HISTORY", compiled.text)
+            self.assertIn("accepted decision from consolidation", compiled.text)
+            self.assertIn("Prefer simple implementations", compiled.text)
+            self.assertIn("real project code", compiled.text)
+            self.assertNotIn("raw old chat", compiled.text)

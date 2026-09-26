@@ -30,6 +30,10 @@ class ProjectConfig:
     project_memory_path: str = "PROJECT.md"
     conversation_dir: str = ".assistant/conversations"
     generated_dir: str = ".assistant/generated"
+    consolidation_dir: str = ".assistant/generated/consolidations"
+    user_memory_path: str = ".assistant/generated/user_memory.md"
+    consolidation_state_path: str = ".assistant/consolidation_state.json"
+    consolidation_interval_hours: int = 24
     chunk_size: int = 1600
     chunk_overlap: int = 240
     vector_top_k: int = 24
@@ -55,6 +59,9 @@ class ProjectConfig:
             config.project_memory_path,
             config.conversation_dir,
             config.generated_dir,
+            config.consolidation_dir,
+            config.user_memory_path,
+            config.consolidation_state_path,
         ):
             config.project_path(project_dir, value)
         return config
@@ -163,6 +170,7 @@ def init_project(project_dir: Path, name: str, *, internal_metadata: bool = Fals
     private_dir(project_dir / ".assistant")
     private_dir(project_dir / ".assistant/conversations")
     private_dir(project_dir / ".assistant/generated")
+    private_dir(project_dir / ".assistant/generated/consolidations")
     private_dir(project_dir / ".assistant/proposals")
     private_dir(project_dir / ".assistant/patches")
     private_dir(project_dir / ".assistant/debug")

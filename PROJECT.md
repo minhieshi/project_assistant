@@ -16,11 +16,11 @@ Restore the high-value parts of the enterprise ChatGPT browser experience locall
 - Controlled live read-only filesystem and Git inspection across registered roots.
 - GPT-5.6 inference through Portkey.
 - Pre-egress path/secret controls.
-- Guided, source-grounded copy-paste code generation with human-controlled application.
+- Structured OpenCode implementation-brief handoff for execution.
 
 ## Decisions
 
-- Project Assistant owns project understanding and code authoring; the human owns source writes, execution, testing and commits.
+- Project Assistant owns project understanding; OpenCode owns code execution.
 - Registered source roots are read-only from the active Project Assistant API/UI/CLI.
 - Treat source code as first-class RAG material.
 - Preserve repo/branch/commit/path/symbol/line metadata on code chunks.
@@ -28,7 +28,7 @@ Restore the high-value parts of the enterprise ChatGPT browser experience locall
 - Use hybrid retrieval: exact + lexical + semantic + graph expansion + live reads.
 - Route across repos as a boost only; never suppress strong global matches.
 - Keep graph extraction deterministic rather than LLM-generated.
-- Persist conversations and guided implementation decisions in Markdown.
+- Persist conversations and generated OpenCode briefs in Markdown.
 - Browser JavaScript receives neither Portkey credentials nor the local FastAPI token.
 - Treat obvious secrets and sensitive credential files as non-egressable; local-only retrieval is allowed where appropriate.
 - Keep assistant state out of source Git repositories where practical.
@@ -38,7 +38,7 @@ Restore the high-value parts of the enterprise ChatGPT browser experience locall
 
 ## Current work
 
-v0.8.0 adds Guided implementation: larger coding tasks are decomposed, paused for user input, re-grounded against live source for each step, and returned as complete copy-pasteable code. Retrieval/indexing/knowledge-graph work remains the core; source mutation remains human-controlled.
+v0.7.9 focuses Project Assistant on read-only project intelligence and high-quality OpenCode handoff. Retrieval/indexing/knowledge-graph work remains the core; source mutation is delegated to the coding agent.
 
 ## Known issues
 
@@ -127,15 +127,6 @@ Git metadata is refreshed independently of source content fingerprints. Change p
 
 
 
-
-## v0.8.0 — Guided implementation
-
-Project Assistant remains read-only with respect to registered source repositories, but it is no longer limited to implementation briefs. In Guided implementation mode it may author complete source/configuration/test code for the user to apply manually.
-
-The conversation is the task state: plan globally, stop for confirmation, retrieve the next step's live targets, implement one step, provide validation instructions, then stop again. This avoids a separate workflow engine and prevents long autonomous implementation runs from compounding stale assumptions.
-
-The copy-paste contract requires repository + relative path + action metadata and complete pasteable units. New files are returned in full; smaller existing files should usually be returned as complete replacements; large files use complete functions/classes/contiguous sections with exact anchors. Placeholders and omitted code are not permitted inside replacement blocks.
-
 ## v0.7.9 — Read-only project intelligence and coding-agent handoff
 
 The product boundary is now explicit: Project Assistant owns project understanding; OpenCode owns execution. Project Assistant may index and read registered source roots, inspect Git state, follow cross-repo relationships, reason about architecture/integration failures and produce implementation plans. It does not edit source files, stage/apply patches or run arbitrary shell commands.
@@ -146,3 +137,7 @@ The primary execution handoff is a structured OpenCode implementation brief cont
 ## v0.7.8 — Authoritative change context
 
 Change planning now receives live Git state for all registered roots independent of RAG. Likely target files must be read live, and Git-backed targets may be compared with `HEAD` through the controlled Git reader before a proposal is considered sufficiently grounded. Diff staging/hash/base-HEAD binding remains a backend approval-stage responsibility.
+
+## Conversation memory (v0.8.0)
+
+Raw conversation Markdown remains the audit trail. Long-term conversational context is now derived through incremental 24-hour consolidations under `.assistant/generated/consolidations/`, with a compact `.assistant/generated/user_memory.md` derived from those consolidations. The context compiler prefers consolidated history and user memory; raw historical chat is fallback-only.

@@ -176,6 +176,56 @@ class IncrementalIndexer:
         self._save_manifest(manifest)
         self.catalog.rebuild(self.config.resolved_sources(self.project_dir), manifest)
 
+    @staticmethod
+    def _assistant_kind(metadata: dict) -> str:
+        explicit = str(metadata.get("assistant_kind") or "").strip()
+        if explicit:
+            return explicit
+        rel = str(metadata.get("relative_path") or "").replace("\\", "/")
+        if rel.startswith(".assistant/conversations/"):
+            return "raw_conversation"
+        if rel.startswith(".assistant/generated/consolidations/"):
+            return "daily_consolidation"
+        if rel == ".assistant/generated/user_memory.md":
+            return "user_memory"
+        return "project"
+
+    @classmethod
+    def _filter_assistant_kinds(
+        cls,
+        hits: list[SearchHit],
+        *,
+        include: set[str] | None = None,
+        exclude: set[str] | None = None,
+        limit: int | None = None,
+    ) -> list[SearchHit]:
+        result: list[SearchHit] = []
+        for hit in hits:
+            kind = cls._assistant_kind(hit.metadata)
+            if include is not None and kind not in include:
+                continue
+            if exclude is not None and kind in exclude:
+                continue
+            result.append(hit)
+            if limit is not None and len(result) >= limit:
+                break
+        return result
+
+    def search_assistant_kind(self, query: str, kind: str, k: int = 8) -> list[SearchHit]:
+        """Hybrid retrieval constrained to one assistant-memory class.
+
+        Over-fetching keeps this useful with indexes created before assistant_kind
+        metadata existed; the path-based classifier remains backwards compatible.
+        """
+        fetch = max(32, k * 8)
+        try:
+            vector = self._filter_assistant_kinds(self.vector_search(query, k=fetch), include={kind}, limit=fetch)
+        except Exception:
+            vector = []
+        lexical = self._filter_assistant_kinds(self.lexical_search(query, k=fetch), include={kind}, limit=fetch)
+        exact = self._filter_assistant_kinds(self.exact_search(query, k=fetch), include={kind}, limit=fetch)
+        return self.fuse(vector, lexical, exact, limit=k)
+
     def vector_search(self, query: str, k: int | None = None, repos: set[str] | None = None) -> list[SearchHit]:
         k = k or self.config.vector_top_k
         fetch_k = max(k, k * 4 if repos else k)
@@ -376,10 +426,12 @@ class IncrementalIndexer:
 
     def _load_documents(self, source: SourceRoot, path: Path) -> list[Document]:
         git = self._git_metadata(Path(source.path)) if source.name != "project" else {"branch": None, "commit": None}
+        relative_path = self._relative(path, Path(source.path))
         base = {
             "source": str(path.resolve()),
             "repo": source.name,
-            "relative_path": self._relative(path, Path(source.path)),
+            "relative_path": relative_path,
+            "assistant_kind": self._assistant_kind({"relative_path": relative_path}),
             "git_branch": git.get("branch") or "",
             "git_commit": git.get("commit") or "",
         }
