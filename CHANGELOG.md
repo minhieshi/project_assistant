@@ -1,3 +1,13 @@
+# v0.8.4
+
+## 0.8.4 — MCP connection diagnostics and transport hardening
+
+- Flattens nested `ExceptionGroup`/AnyIO TaskGroup failures so MCP CLI/UI errors show the underlying HTTP/OAuth cause instead of only `unhandled errors in a TaskGroup`.
+- Explicitly advertises OAuth authorization-code + refresh-token grant types and `response_types=["code"]` during dynamic client registration.
+- Applies the MCP SDK recommended Streamable HTTP timeout profile (30s connect/write/pool, 300s read) when using the custom OAuth-enabled `httpx2.AsyncClient`.
+- Redacts authorization headers and OAuth callback/token query values from surfaced diagnostics.
+- Keeps guided implementation, consolidated memory, and MCP credential/registry behaviour unchanged.
+
 # v0.8.3
 
 ## 0.8.3 — Guided implementation merged with memory and MCP

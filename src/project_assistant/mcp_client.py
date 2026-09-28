@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import queue
 import threading
 import webbrowser
@@ -338,6 +339,8 @@ class MCPManager:
                 client_metadata=OAuthClientMetadata(
                     client_name="Project Assistant",
                     redirect_uris=[AnyUrl(callback.redirect_uri)],
+                    grant_types=["authorization_code", "refresh_token"],
+                    response_types=["code"],
                     application_type="native",
                 ),
                 storage=storage,
@@ -345,12 +348,64 @@ class MCPManager:
                 callback_handler=wait_for_callback,
             )
             try:
-                async with httpx2.AsyncClient(auth=oauth) as http_client:
+                # Streamable HTTP can hold its response stream open for minutes.
+                # A bare httpx2 client uses a much shorter flat timeout, which can
+                # surface as a confusing AnyIO TaskGroup failure. Match the MCP
+                # SDK's recommended transport timeouts when bringing our own client.
+                timeout = httpx2.Timeout(30.0, read=300.0)
+                async with httpx2.AsyncClient(auth=oauth, timeout=timeout) as http_client:
                     transport = streamable_http_client(server.url or "", http_client=http_client)
                     async with Client(transport) as client:
                         yield client
             finally:
                 callback.close()
+
+    @staticmethod
+    def _safe_exception_message(exc: BaseException) -> str:
+        """Return useful nested async errors without leaking OAuth secrets.
+
+        AnyIO/asyncio transports frequently wrap the actionable HTTP/OAuth error in
+        ExceptionGroup/TaskGroup. Flatten the leaves so the CLI/UI shows the real
+        failure instead of only ``unhandled errors in a TaskGroup``.
+        """
+
+        leaves: list[BaseException] = []
+
+        def walk(item: BaseException) -> None:
+            children = getattr(item, "exceptions", None)
+            if isinstance(children, (list, tuple)) and children:
+                for child in children:
+                    if isinstance(child, BaseException):
+                        walk(child)
+                return
+            leaves.append(item)
+
+        walk(exc)
+        if not leaves:
+            leaves = [exc]
+
+        parts: list[str] = []
+        for item in leaves:
+            # CancelledError is normally fallout from another failing task. Keep it
+            # only when it is the sole diagnostic available.
+            if type(item).__name__ == "CancelledError" and len(leaves) > 1:
+                continue
+            message = str(item).replace("\n", " ").strip()
+            text = f"{type(item).__name__}: {message}" if message else type(item).__name__
+
+            # Never echo bearer/basic credentials or OAuth callback/token values.
+            text = re.sub(r"(?i)(authorization\s*[:=]\s*(?:bearer|basic)\s+)[^\s,;]+", r"\1<redacted>", text)
+            text = re.sub(
+                r"(?i)([?&](?:code|access_token|refresh_token|client_secret|token)=)[^&#\s]+",
+                r"\1<redacted>",
+                text,
+            )
+            if text not in parts:
+                parts.append(text)
+
+        if not parts:
+            parts = [f"{type(exc).__name__}: {str(exc).replace(chr(10), ' ')}"]
+        return " | ".join(parts)[:1400]
 
     @staticmethod
     def _model_value(value: Any) -> Any:
@@ -419,8 +474,11 @@ class MCPManager:
         except Exception as exc:
             # Do not include credential/token material. SDK/network exceptions should
             # normally contain endpoint/status information only; still cap the text.
-            message = f"{type(exc).__name__}: {exc}".replace("\n", " ")[:700]
-            authish = any(term in message.lower() for term in ("oauth", "unauthorized", "unauthorised", "401", "authorization"))
+            message = self._safe_exception_message(exc)
+            authish = any(term in message.lower() for term in (
+                "oauth", "unauthorized", "unauthorised", "401", "authorization",
+                "access denied", "invalid_client", "invalid_grant",
+            ))
             result = MCPProbeResult(server_id=server.id, status="auth_required" if authish else "error", error=message)
         self._last[server.id] = result
         return result

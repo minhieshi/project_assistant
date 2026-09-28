@@ -1396,3 +1396,8 @@ MCP retrieval integration (next)
 ```
 
 The separation is deliberate: successful authentication to Atlassian or CEB does not automatically grant the language model permission to invoke every tool exposed by that server.
+
+
+## MCP connection troubleshooting
+
+v0.8.4 flattens nested TaskGroup errors. For Atlassian use `https://mcp.atlassian.com/v2/mcp`, log out, then reconnect.

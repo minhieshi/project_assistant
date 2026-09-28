@@ -177,6 +177,32 @@ class MCPManagerTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(result.resources, [])
             self.assertEqual(result.resource_templates, [])
 
+
+    async def test_probe_flattens_nested_taskgroup_error_and_redacts_oauth_values(self):
+        class FailingManager(MCPManager):
+            @asynccontextmanager
+            async def _client_context(self, server):
+                raise ExceptionGroup(
+                    "unhandled errors in a TaskGroup",
+                    [RuntimeError("OAuth token exchange failed at https://example.test/cb?code=secret-code&token=secret-token")],
+                )
+                yield  # pragma: no cover
+
+        with tempfile.TemporaryDirectory() as tmp:
+            registry = MCPServerRegistry(path=Path(tmp) / "mcp.json")
+            registry.add_remote("atlassian", "https://mcp.atlassian.com/v2/mcp")
+            manager = FailingManager(
+                registry=registry,
+                credential_store=PrivateFileCredentialStore(Path(tmp) / "auth.json"),
+            )
+            result = await manager.probe("atlassian")
+            self.assertEqual(result.status, "auth_required")
+            self.assertIn("RuntimeError: OAuth token exchange failed", result.error or "")
+            self.assertNotIn("unhandled errors in a TaskGroup", result.error or "")
+            self.assertNotIn("secret-code", result.error or "")
+            self.assertNotIn("secret-token", result.error or "")
+            self.assertIn("<redacted>", result.error or "")
+
     async def test_disabled_server_does_not_connect(self):
         with tempfile.TemporaryDirectory() as tmp:
             registry = MCPServerRegistry(path=Path(tmp) / "mcp.json")
