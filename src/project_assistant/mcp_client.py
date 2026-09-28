@@ -391,6 +391,35 @@ class MCPManager:
                 callback.close()
 
     @staticmethod
+    def _is_method_not_found(exc: BaseException) -> bool:
+        """Return True when an exception tree represents JSON-RPC -32601.
+
+        MCP transports may wrap MCPError inside AnyIO/asyncio ExceptionGroup, so
+        inspect both structured error data (when available) and the rendered
+        message. This is used only to tolerate *optional discovery methods*; a
+        missing tools/list remains a real connection/capability failure.
+        """
+        children = getattr(exc, "exceptions", None)
+        if isinstance(children, (list, tuple)) and children:
+            return any(
+                MCPManager._is_method_not_found(child)
+                for child in children
+                if isinstance(child, BaseException)
+            )
+
+        # MCPError implementations expose the JSON-RPC error either directly or
+        # under an ``error``/``data`` model depending on SDK point release.
+        for candidate in (exc, getattr(exc, "error", None), getattr(exc, "data", None)):
+            if candidate is None:
+                continue
+            code = getattr(candidate, "code", None)
+            if code == -32601:
+                return True
+
+        message = str(exc).lower()
+        return "method not found" in message or "-32601" in message
+
+    @staticmethod
     def _safe_exception_message(exc: BaseException) -> str:
         """Return useful nested async errors without leaking OAuth secrets.
 
@@ -465,8 +494,25 @@ class MCPManager:
                 supports_resources = capabilities is None or getattr(capabilities, "resources", None) is not None
 
                 tools_result = await client.list_tools() if supports_tools else None
-                resources_result = await client.list_resources() if supports_resources else None
-                templates_result = await client.list_resource_templates() if supports_resources else None
+
+                # Resources and resource templates are optional MCP primitives.
+                # Some enterprise servers (including tool-centric gateways) either
+                # advertise resources loosely or return JSON-RPC -32601 for one of
+                # these discovery methods. Do not discard a successful tools/list
+                # result just because an optional resource method is absent.
+                resources_result = None
+                templates_result = None
+                if supports_resources:
+                    try:
+                        resources_result = await client.list_resources()
+                    except BaseException as exc:
+                        if not self._is_method_not_found(exc):
+                            raise
+                    try:
+                        templates_result = await client.list_resource_templates()
+                    except BaseException as exc:
+                        if not self._is_method_not_found(exc):
+                            raise
 
                 tools: list[MCPToolInfo] = []
                 for tool in (tools_result.tools if tools_result is not None else []):

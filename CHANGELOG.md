@@ -1,3 +1,11 @@
+# v0.8.6
+
+## 0.8.6 — MCP optional discovery compatibility
+
+- Keeps a successful `tools/list` result when an MCP server returns JSON-RPC `-32601 Method not found` for optional resource discovery methods.
+- Treats `resources/list` and `resources/templates/list` as independently optional during probing instead of failing the whole MCP connection.
+- Adds nested ExceptionGroup-aware detection for `Method not found` without weakening failures for `tools/list`, authentication, TLS, or other transport errors.
+
 # v0.8.5
 
 ## 0.8.5 — Corporate TLS compatibility for MCP

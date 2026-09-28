@@ -249,3 +249,53 @@ class MCPManagerTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class MCPOptionalDiscoveryCompatibilityTests(unittest.IsolatedAsyncioTestCase):
+    async def test_probe_keeps_tools_when_optional_resource_methods_are_not_found(self):
+        class MethodNotFoundError(Exception):
+            def __init__(self):
+                self.code = -32601
+                super().__init__('Method not found')
+
+        class FakeClient:
+            protocol_version = '2025-11-25'
+            server_info = SimpleNamespace(name='Tool gateway', version='1.0')
+            instructions = None
+            # Simulate a server that advertises resources but does not actually
+            # implement the optional list/template methods consistently.
+            server_capabilities = SimpleNamespace(tools=object(), resources=object())
+
+            async def list_tools(self):
+                return SimpleNamespace(tools=[SimpleNamespace(
+                    name='discover', title='Discover', description='Find tools',
+                    input_schema={'type':'object'}, annotations=None,
+                )])
+
+            async def list_resources(self):
+                raise MethodNotFoundError()
+
+            async def list_resource_templates(self):
+                raise MethodNotFoundError()
+
+        class FakeManager(MCPManager):
+            @asynccontextmanager
+            async def _client_context(self, server):
+                yield FakeClient()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            registry = MCPServerRegistry(path=Path(tmp) / 'mcp.json')
+            registry.add_remote('atlassian', 'https://mcp.atlassian.com/v2/mcp')
+            manager = FakeManager(
+                registry=registry,
+                credential_store=PrivateFileCredentialStore(Path(tmp) / 'auth.json'),
+            )
+            result = await manager.probe('atlassian')
+            self.assertEqual(result.status, 'connected')
+            self.assertEqual([tool.name for tool in result.tools], ['discover'])
+            self.assertEqual(result.resources, [])
+            self.assertEqual(result.resource_templates, [])
+
+    def test_method_not_found_recognises_nested_exception_group(self):
+        wrapped = ExceptionGroup('task group', [RuntimeError('MCPError: Method not found')])
+        self.assertTrue(MCPManager._is_method_not_found(wrapped))
+        self.assertFalse(MCPManager._is_method_not_found(RuntimeError('401 Unauthorized')))
