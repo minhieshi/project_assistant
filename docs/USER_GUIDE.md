@@ -1,8 +1,8 @@
-# Project Assistant v0.8.3 — User Guide
+# Project Assistant v0.8.7 — User Guide
 
-This guide describes the behaviour that is actually implemented in **v0.8.3**. It covers setup, projects and source repositories, indexing and retrieval, conversation persistence and consolidation, local state, MCP credential storage, the CLI, the local API, and troubleshooting.
+This guide describes the behaviour that is actually implemented in **v0.8.7**. It covers setup, projects and source repositories, indexing and retrieval, conversation persistence and consolidation, local state, MCP credential storage, the CLI, the local API, and troubleshooting.
 
-> **MCP status:** v0.8.3 includes the remote/local MCP registry, Streamable HTTP and stdio connectivity, automatic OAuth browser authentication and Keychain-backed OAuth persistence. Atlassian and internal remote MCPs such as CEB can now be connected and their capabilities discovered. The chat retrieval agent does not yet execute MCP tools automatically; a local read-only allowlist is the next safety layer.
+> **MCP status:** v0.8.7 connects authenticated MCP servers to the normal retrieval planner through an explicit local per-server tool allowlist. Only tools you approve in the Connections tab or with `mcp-allow` are exposed to chat retrieval. MCP tool descriptions, schemas and results are treated as untrusted external evidence, and obvious mutation-oriented tool names are blocked locally even if the server labels them read-only.
 
 ## 1. What Project Assistant is
 
@@ -53,7 +53,7 @@ From the extracted project directory:
 python -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
-python -m pip install --force-reinstall --no-deps .
+python -m pip install -e .
 ```
 
 Install/update the frontend dependencies:
@@ -550,7 +550,7 @@ export MEMORY_CONSOLIDATION_ENABLED=0
 
 Manual `project-assistant ... consolidate` still remains available.
 
-## 10. MCP connections (v0.8.3)
+## 10. MCP connections and chat retrieval (v0.8.7)
 
 MCP server configuration is global to Project Assistant rather than stored inside a project. This lets the same Atlassian, CEB or local infrastructure MCP connection be reused across multiple projects.
 
@@ -566,7 +566,7 @@ or, when `PROJECT_ASSISTANT_HOME` is set:
 $PROJECT_ASSISTANT_HOME/mcp-servers.json
 ```
 
-The registry contains only non-secret connection metadata such as server id, type, URL/command and enabled state. OAuth credentials are stored separately.
+The registry contains only non-secret connection metadata such as server id, type, URL/command, enabled state and the local `allowed_tools` list. OAuth credentials are stored separately.
 
 A typical remote entry looks like:
 
@@ -576,7 +576,8 @@ A typical remote entry looks like:
   "name": "Atlassian",
   "type": "remote",
   "enabled": true,
-  "url": "https://mcp.atlassian.com/v2/mcp"
+  "url": "https://mcp.atlassian.com/v2/mcp",
+  "allowed_tools": ["getAccessibleAtlassianResources", "discover", "executeRead"]
 }
 ```
 
@@ -715,30 +716,49 @@ project-assistant mcp-add-local my-local-mcp \
 
 This is the mechanism intended for the Zowe MCP server: no separate HTTP port and no manual background daemon are required.
 
-### Current safety boundary
+### Chat retrieval allowlist
 
-v0.8.3 deliberately keeps MCP **connection/authentication/discovery** separate from model-driven MCP tool execution. Although the internal manager has low-level resource/tool methods, the chat retrieval agent does not yet receive MCP tools automatically.
+A successful MCP connection does **not** expose every discovered tool to GPT. v0.8.7 adds a second, local permission boundary: each server stores an explicit `allowed_tools` list. Only those exact server/tool pairs are advertised to the retrieval planner.
 
-That means:
+In the **Connections** tab:
 
-```text
-implemented now
-  ✓ configure remote/local MCPs
-  ✓ OAuth browser sign-in
-  ✓ token/client-info persistence
-  ✓ silent refresh when supported
-  ✓ reconnect / logout
-  ✓ list tools/resources/templates
-  ✓ local stdio lifecycle
+1. connect the server and expand its discovered tools;
+2. tick **Allow in chat retrieval** only for tools you want GPT to use;
+3. leave write/destructive tools unticked. Obvious mutation-oriented names are disabled by Project Assistant's local policy.
 
-next layer
-  - per-server local read-only tool allowlist
-  - MCP resources/tool results -> retrieval evidence
-  - model-driven MCP calls with provenance and output limits
-  - Zowe MCP server exposing the approved read-only Zowe functions
+CLI equivalent:
+
+```bash
+project-assistant mcp-allow atlassian getAccessibleAtlassianResources discover executeRead
+project-assistant mcp-deny atlassian executeWrite executeDestructive
 ```
 
-Do not treat an MCP server's `read_only_hint` annotation as a security boundary. The UI displays it as useful metadata only; Project Assistant will still require a local allowlist before model-driven tool execution is enabled.
+For Atlassian's current v2 gateway, a useful minimum read-only set is normally `getAccessibleAtlassianResources`, `discover`, and `executeRead`, plus any direct read/search tools you specifically want to expose. Do **not** allow `executeWrite` or destructive/mutation tools.
+
+The retrieval planner may make multiple MCP calls in one request. This supports flows such as:
+
+```text
+user question
+  -> getAccessibleAtlassianResources (resolve cloudId when needed)
+  -> discover (find the relevant deferred read operation/schema)
+  -> executeRead (run the discovered read operation)
+  -> normalised SearchHit evidence
+  -> final answer with mcp:<server>/<tool> provenance
+```
+
+MCP output from one retrieval round is visible to the next round. MCP tool calls are capped at six per user request, and returned text is bounded before it enters compiled context. Existing egress/secret checks apply to MCP results before they are sent to the configured Portkey model.
+
+### MCP trust boundary
+
+Do not treat an MCP server's `read_only_hint`, description, schema text, or returned content as trusted instructions. They are external evidence only. Project Assistant:
+
+- requires a locally persisted exact-name allowlist;
+- applies a defensive local block to obvious mutation-oriented tool names;
+- validates that tool arguments are a JSON object;
+- records the server and tool in retrieval provenance;
+- does not grant permission merely because the server advertises `read_only_hint=true`.
+
+The remaining MCP-specific feature work is primarily the **Zowe MCP server itself** and any richer first-class MCP resource handling; authenticated tool-based retrieval is implemented in v0.8.7.
 
 ## 11. Complete CLI reference
 
@@ -801,6 +821,22 @@ Connect and print a compact list of discovered tools and resources. A server-sup
 
 ```bash
 project-assistant mcp-tools atlassian
+```
+
+#### `mcp-allow SERVER_ID TOOL [TOOL...]`
+
+Add one or more discovered tool names to the local chat-retrieval allowlist. Obvious mutation-oriented tool names are rejected even if the remote server marks them read-only.
+
+```bash
+project-assistant mcp-allow atlassian getAccessibleAtlassianResources discover executeRead
+```
+
+#### `mcp-deny SERVER_ID TOOL [TOOL...]`
+
+Remove tools from the local chat-retrieval allowlist.
+
+```bash
+project-assistant mcp-deny atlassian executeWrite executeDestructive
 ```
 
 #### `mcp-enable SERVER_ID` / `mcp-disable SERVER_ID`
@@ -1049,11 +1085,12 @@ POST   /api/mcp/servers/remote
 POST   /api/mcp/servers/local
 POST   /api/mcp/servers/{server_id}/enabled
 POST   /api/mcp/servers/{server_id}/connect
+POST   /api/mcp/servers/{server_id}/allowed-tools
 POST   /api/mcp/servers/{server_id}/logout
 DELETE /api/mcp/servers/{server_id}
 ```
 
-`connect` can run the interactive OAuth flow and then returns discovered MCP capabilities. The browser callback itself uses a temporary loopback listener on `PROJECT_ASSISTANT_MCP_CALLBACK_PORT`, not an unauthenticated FastAPI `/api/*` route.
+`connect` can run the interactive OAuth flow and then returns discovered MCP capabilities. `allowed-tools` replaces the server's local chat-retrieval allowlist with the supplied exact tool names. The browser callback itself uses a temporary loopback listener on `PROJECT_ASSISTANT_MCP_CALLBACK_PORT`, not an unauthenticated FastAPI `/api/*` route.
 
 ### Status/projects
 
@@ -1184,7 +1221,7 @@ For an **imported** code repository, the prompt/project-memory paths default to:
 
 `.assistant/` is added to `.git/info/exclude` when the project directory is already a Git repository. This keeps local assistant state out of normal Git status without modifying the repository's tracked `.gitignore`.
 
-Historical `.assistant/proposals/` and `.assistant/patches/` directories and `change_gate.py` compatibility code can exist from earlier versions. They are not wired into the normal v0.8.3 API/UI/CLI mutation path.
+Historical `.assistant/proposals/` and `.assistant/patches/` directories and `change_gate.py` compatibility code can exist from earlier versions. They are not wired into the normal v0.8.7 API/UI/CLI mutation path.
 
 ## 14. Project configuration (`.assistant/project.json`)
 
@@ -1247,8 +1284,10 @@ Source roots can be absolute or project-relative. Existing source roots are vali
 - the file fallback is explicit and private-permissioned;
 - remote MCP URLs require HTTPS unless they are loopback-only;
 - OAuth callback handling binds only to `127.0.0.1`;
-- MCP tool annotations such as `read_only_hint` are treated as hints, not trusted authorization;
-- model-driven MCP tool calls remain disabled until the local allowlist layer is added.
+- MCP tool annotations, schemas and returned content are treated as untrusted evidence rather than authorization or instructions;
+- model-driven MCP calls are limited to exact tool names in the local per-server `allowed_tools` list;
+- obvious mutation-oriented tool names are blocked locally even if a server marks them read-only;
+- MCP calls carry server/tool provenance, bounded output and the same egress/secret gate used by other model-bound context.
 
 ## 16. Troubleshooting
 
@@ -1378,24 +1417,26 @@ cd web
 npm run build
 ```
 
-## 18. Current v0.8.3 limitations / next layer
+## 18. Current v0.8.7 limitations / next layer
 
-Authenticated MCP connectivity is now present. The remaining MCP work is intentionally narrower:
+Authenticated **tool-based** MCP retrieval is implemented. The remaining MCP work is narrower:
 
 ```text
-MCP connectivity (implemented)
-  ├── remote Streamable HTTP + OAuth
+MCP connectivity + retrieval (implemented)
+  ├── remote Streamable HTTP + OAuth/Keychain
+  ├── corporate TLS compatibility when explicitly enabled
   ├── local stdio lifecycle
-  └── capability discovery
+  ├── capability discovery
+  ├── local per-server chat tool allowlists
+  ├── multi-round model-planned MCP tool calls
+  └── SearchHit normalisation + provenance/output/egress controls
 
-MCP retrieval integration (next)
-  ├── local read-only tool allowlists
-  ├── MCP results normalised as retrieval evidence
-  ├── provenance/output-size controls
-  └── read-only Zowe MCP server and approved Zowe functions
+remaining
+  ├── read-only Zowe MCP server exposing approved Zowe functions
+  └── richer first-class MCP resource/template retrieval where useful
 ```
 
-The separation is deliberate: successful authentication to Atlassian or CEB does not automatically grant the language model permission to invoke every tool exposed by that server.
+A connected server still grants the model **no tool access until you explicitly approve tools**. This is deliberate: authentication and authorization-to-use-in-chat are separate controls.
 
 
 ## MCP connection troubleshooting

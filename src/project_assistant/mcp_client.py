@@ -16,6 +16,7 @@ from urllib.parse import parse_qs, urlparse
 
 from .credentials import CredentialStore, create_mcp_credential_store
 from .mcp_registry import MCPServerConfig, MCPServerRegistry
+from .mcp_policy import mcp_tool_retrieval_block_reason, mcp_tool_retrieval_eligible
 
 
 class MCPConnectionError(RuntimeError):
@@ -37,6 +38,8 @@ class MCPToolInfo:
     description: str | None = None
     input_schema: dict[str, Any] = field(default_factory=dict)
     read_only_hint: bool | None = None
+    retrieval_eligible: bool = True
+    retrieval_block_reason: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -45,6 +48,8 @@ class MCPToolInfo:
             "description": self.description,
             "input_schema": self.input_schema,
             "read_only_hint": self.read_only_hint,
+            "retrieval_eligible": self.retrieval_eligible,
+            "retrieval_block_reason": self.retrieval_block_reason,
         }
 
 
@@ -518,12 +523,16 @@ class MCPManager:
                 for tool in (tools_result.tools if tools_result is not None else []):
                     annotations = getattr(tool, "annotations", None)
                     read_only_hint = getattr(annotations, "read_only_hint", None) if annotations is not None else None
+                    tool_name = str(tool.name)
+                    block_reason = mcp_tool_retrieval_block_reason(tool_name)
                     tools.append(MCPToolInfo(
-                        name=str(tool.name),
+                        name=tool_name,
                         title=getattr(tool, "title", None),
                         description=getattr(tool, "description", None),
                         input_schema=dict(getattr(tool, "input_schema", {}) or {}),
                         read_only_hint=read_only_hint,
+                        retrieval_eligible=mcp_tool_retrieval_eligible(tool_name),
+                        retrieval_block_reason=block_reason,
                     ))
 
                 resources = [
@@ -575,11 +584,10 @@ class MCPManager:
             return self._model_value(result)
 
     async def call_tool(self, server_id: str, tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-        """Low-level escape hatch for future retrieval integration.
+        """Execute one MCP tool call.
 
-        This is intentionally not exposed to the current chat/retrieval agent yet.
-        The next layer will add a local per-server allowlist before model-driven tool
-        execution is enabled.
+        Chat/retrieval callers must enforce the local per-server allowlist before
+        reaching this transport-level method; MCPRetrievalAccess owns that policy.
         """
         server = self.registry.get(server_id)
         if not server.enabled:

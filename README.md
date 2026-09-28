@@ -1,4 +1,4 @@
-# Local Project Assistant — v0.8.6
+# Local Project Assistant — v0.8.7
 
 Project Assistant recreates the useful parts of the enterprise ChatGPT browser experience locally while using approved Portkey routes for GPT-5.6 inference and embeddings. It keeps persistent project conversations, indexes multiple repositories, compiles high-signal project context, maintains consolidated user/project memory, and can produce source-grounded **copy-pasteable implementation code** without writing to registered source repositories itself.
 
@@ -21,13 +21,13 @@ Registered source repositories remain read-only to Project Assistant. It does no
 
 For installation, environment variables, project/source management, **guided implementation**, conversation consolidation and memory locations, MCP configuration/authentication, the complete CLI/API reference, persistent-state layout and troubleshooting, see **[`docs/USER_GUIDE.md`](docs/USER_GUIDE.md)**.
 
-## v0.8.6 — Corporate TLS compatibility + MCP diagnostics + guided implementation + memory
+## v0.8.7 — MCP retrieval integration + guided implementation + memory
 
-v0.8.3 merges the three active feature strands into one build:
+v0.8.7 keeps the three active feature strands together and now completes the first read-only MCP retrieval layer:
 
 - **Guided implementation** from the v0.8.0.03 branch replaces the OpenCode handoff workflow.
 - **Conversation consolidation + user memory** remain from the memory-enabled v0.8.0 branch.
-- **Authenticated MCP connectivity** remains from v0.8.2.
+- **Authenticated MCP connectivity + locally approved read-only MCP retrieval** build on v0.8.2–v0.8.6.
 
 The composer now has two modes:
 
@@ -76,6 +76,7 @@ FastAPI 127.0.0.1:8000
   +-- bounded multi-round retrieval planner
   +-- controlled live read-only filesystem/Git tools
   +-- MCP registry + OAuth/Keychain + capability discovery
+  +-- local per-server MCP tool allowlists + retrieval evidence
   |
   v
 Configured enterprise Portkey gateway
@@ -105,9 +106,10 @@ bounded GPT retrieval planner
         +-- list_files / find_files / grep_project
         +-- file_metadata / read_file / read_file_range
         +-- git_status / git_diff / git_log / git_show
+        +-- mcp_call (only locally approved MCP tools)
         |
         v
-compiled high-signal project context
+compiled high-signal project + MCP context
 ```
 
 Guided implementation has a stronger retrieval contract: likely target files must be located and read live where possible before the model declares context sufficient for copy-paste code generation. Short continuation turns such as `yes`, `next`, or `do step 2` use recent conversation state to recover the target files.
@@ -134,16 +136,20 @@ project-assistant --project /path/to/project consolidate --force
 
 The context compiler prefers current conversation + consolidated history/user memory. Raw historical chats are fallback evidence rather than normal project-code RAG.
 
-## MCP connectivity
+## MCP connectivity and chat retrieval
 
-v0.8.3 includes:
+v0.8.7 includes:
 
 - remote **Streamable HTTP** MCP connections;
 - automatic OAuth discovery/browser sign-in through the MCP Python SDK;
 - OAuth token and client-registration persistence in **macOS Keychain** by default;
 - silent token refresh when supported by the server;
 - local **stdio** MCP configuration and subprocess lifecycle;
-- UI/CLI connection state plus tool/resource/template discovery.
+- UI/CLI connection state plus tool/resource/template discovery;
+- a **local per-server tool allowlist** for chat retrieval;
+- model-planned MCP calls across multiple retrieval rounds;
+- MCP results normalised into ordinary retrieval evidence with server/tool provenance and output limits;
+- a local guard that refuses obviously mutating tool names even if a server labels them read-only.
 
 Example remote servers:
 
@@ -167,7 +173,16 @@ project-assistant mcp-add-local zowe python -m project_assistant_mcp.zowe --name
 project-assistant mcp-connect zowe
 ```
 
-**Current MCP boundary:** connection/authentication/discovery are implemented, but MCP tools are not yet exposed to the chat retrieval agent automatically. The next safety layer is a local per-server read-only allowlist + normalisation of MCP results into retrieval evidence.
+After connecting a server, explicitly approve the tools that chat may use. In the **Connections** tab, tick **Allow in chat retrieval** only for tools you intend to be read-only. Server `read_only_hint` metadata is shown but is not trusted as authorization.
+
+For Atlassian v2, a useful read-only set is typically `getAccessibleAtlassianResources`, `discover`, `executeRead`, and direct read/search tools you want exposed. Do **not** approve `executeWrite` or destructive/mutating tools. The retrieval planner can use `discover` in one round and `executeRead` in the next, so deferred Atlassian tools work without exposing write pathways.
+
+CLI equivalent:
+
+```bash
+project-assistant mcp-allow atlassian getAccessibleAtlassianResources discover executeRead
+project-assistant mcp-list
+```
 
 ## Security boundary
 
@@ -193,7 +208,7 @@ From the project directory:
 python -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
-python -m pip install --force-reinstall --no-deps .
+python -m pip install -e .
 ```
 
 Install/update frontend dependencies when needed:
@@ -210,7 +225,7 @@ Configure the Portkey environment variables, then start with your existing workf
 ./scripts/dev.sh
 ```
 
-No full reindex is required solely for the v0.8.3 workflow merge.
+No full reindex is required for the v0.8.7 MCP retrieval layer.
 
 ## CLI examples
 
@@ -227,6 +242,7 @@ project-assistant mcp-list
 project-assistant mcp-add atlassian https://mcp.atlassian.com/v2/mcp --name Atlassian
 project-assistant mcp-connect atlassian
 project-assistant mcp-tools atlassian
+project-assistant mcp-allow atlassian getAccessibleAtlassianResources discover executeRead
 ```
 
 The complete command-by-command reference is in [`docs/USER_GUIDE.md`](docs/USER_GUIDE.md#11-complete-cli-reference).

@@ -33,6 +33,7 @@ from .schemas import (
     MCPRemoteServerRequest,
     MCPLocalServerRequest,
     MCPEnabledRequest,
+    MCPAllowedToolsRequest,
 )
 
 
@@ -116,7 +117,7 @@ async def _lifespan(app: FastAPI):
                 pass
 
 
-app = FastAPI(title="Local Project Assistant", version="0.8.5", lifespan=_lifespan)
+app = FastAPI(title="Local Project Assistant", version="0.8.7", lifespan=_lifespan)
 app.add_middleware(TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost", "testserver"])
 
 
@@ -134,7 +135,7 @@ async def local_api_auth(request: Request, call_next):
 
 @app.get("/health")
 def health() -> dict:
-    return {"status": "ok", "version": "0.8.5"}
+    return {"status": "ok", "version": "0.8.7"}
 
 
 @app.get("/api/status")
@@ -144,7 +145,7 @@ def status() -> dict:
 
     settings = PortkeySettings.from_env()
     return {
-        "version": "0.8.5",
+        "version": "0.8.7",
         "projects_root": str(registry.projects_root),
         "portkey": {
             "base_url": settings.base_url,
@@ -191,6 +192,15 @@ def add_local_mcp(body: MCPLocalServerRequest) -> dict:
 def set_mcp_enabled(server_id: str, body: MCPEnabledRequest) -> dict:
     try:
         MCP_REGISTRY.set_enabled(server_id, body.enabled)
+        return next(item for item in MCP_MANAGER.configured() if item["id"] == server_id)
+    except Exception as exc:
+        raise _error(exc, 404 if isinstance(exc, KeyError) else 400)
+
+
+@app.post("/api/mcp/servers/{server_id}/allowed-tools")
+def set_mcp_allowed_tools(server_id: str, body: MCPAllowedToolsRequest) -> dict:
+    try:
+        MCP_REGISTRY.set_allowed_tools(server_id, body.tools)
         return next(item for item in MCP_MANAGER.configured() if item["id"] == server_id)
     except Exception as exc:
         raise _error(exc, 404 if isinstance(exc, KeyError) else 400)

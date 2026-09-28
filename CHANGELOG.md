@@ -1,3 +1,16 @@
+# v0.8.7
+
+## 0.8.7 — Locally-approved MCP retrieval
+
+- Connects authenticated MCP tools to the normal multi-round retrieval planner through an explicit per-server `allowed_tools` list.
+- Adds Connections-tab **Allow in chat retrieval** controls plus `mcp-allow` / `mcp-deny` CLI commands.
+- Treats MCP descriptions, schemas and results as untrusted external evidence; a server `read_only_hint` is never trusted as authorization.
+- Adds a defensive local blocker for obvious mutation-oriented tool names, including write/create/update/delete/destructive operations.
+- Adds the planner `mcp_call` action with exact server/tool selection, JSON-object arguments and a maximum of six MCP calls per request.
+- Makes MCP results from one retrieval round available to subsequent rounds, supporting workflows such as Atlassian `discover` followed by `executeRead`.
+- Normalises MCP results into `SearchHit` evidence with `mcp:<server>/<tool>` provenance, bounded output and the normal egress/secret safety gate.
+- Preserves OAuth/Keychain, corporate TLS compatibility, optional capability discovery, guided implementation and conversation memory/consolidation.
+
 # v0.8.6
 
 ## 0.8.6 — MCP optional discovery compatibility

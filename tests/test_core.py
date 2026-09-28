@@ -422,7 +422,7 @@ class WebFoundationTests(unittest.TestCase):
     def test_api_app_imports_without_initialising_rag(self):
         from project_assistant.api.app import app
 
-        self.assertEqual(app.version, "0.8.5")
+        self.assertEqual(app.version, "0.8.7")
 
     def test_portkey_url_is_explicit_and_does_not_default_public(self):
         from project_assistant.config import PortkeySettings
@@ -1391,3 +1391,85 @@ class MemoryConsolidationTests(unittest.TestCase):
             self.assertIn("Prefer simple implementations", compiled.text)
             self.assertIn("real project code", compiled.text)
             self.assertNotIn("raw old chat", compiled.text)
+
+
+class MCPRetrievalAgentTests(unittest.TestCase):
+    def test_planner_can_call_approved_mcp_tool_and_use_result_next_round(self):
+        from project_assistant.mcp_retrieval import MCPRetrievalCatalog, ApprovedMCPTool
+        from project_assistant.mcp_client import MCPToolInfo
+        from project_assistant.retrieval_agent import RetrievalAgent
+        from project_assistant.retrieval_types import SearchHit
+
+        class FakeModel:
+            def __init__(self):
+                self.calls = 0
+                self.second_user = ""
+
+            def complete(self, system, user):
+                self.calls += 1
+                if self.calls == 1:
+                    self.assert_catalog = "executeRead" in user and "LOCALLY APPROVED MCP TOOL CATALOG" in user
+                    return json.dumps({
+                        "sufficient": False,
+                        "actions": [{
+                            "tool": "mcp_call",
+                            "server": "atlassian",
+                            "target": "executeRead",
+                            "arguments": {"query": "certificate renewal"},
+                        }],
+                    })
+                self.second_user = user
+                return json.dumps({"sufficient": True, "actions": []})
+
+        class FakeToolkit:
+            def source_names(self):
+                return ("project",)
+
+            def mcp_catalog(self):
+                return MCPRetrievalCatalog((ApprovedMCPTool(
+                    "atlassian",
+                    "Atlassian",
+                    MCPToolInfo(
+                        name="executeRead",
+                        description="Read Atlassian content",
+                        input_schema={"type": "object", "properties": {"query": {"type": "string"}}},
+                    ),
+                ),))
+
+            def execute(self, action, limit=12):
+                self.action = action
+                return [SearchHit(
+                    "Confluence certificate renewal design",
+                    {
+                        "id": "mcp:1",
+                        "repo": "mcp:atlassian",
+                        "relative_path": "executeRead",
+                        "source": "mcp://atlassian/executeRead",
+                        "egress_allowed": True,
+                    },
+                    1.0,
+                    ("mcp",),
+                )]
+
+        model = FakeModel()
+        toolkit = FakeToolkit()
+        result = RetrievalAgent(model, toolkit).plan_and_retrieve("look up certificate renewal", "", [], [], max_rounds=2)  # type: ignore[arg-type]
+        self.assertTrue(getattr(model, "assert_catalog", False))
+        self.assertEqual(result.actions[0].tool, "mcp_call")
+        self.assertEqual(result.actions[0].server, "atlassian")
+        self.assertEqual(result.actions[0].arguments, {"query": "certificate renewal"})
+        self.assertIn("Confluence certificate renewal design", model.second_user)
+        self.assertEqual(len(result.hits), 1)
+
+    def test_mcp_call_parser_requires_server_and_tool(self):
+        from project_assistant.retrieval_agent import RetrievalAgent
+
+        actions = RetrievalAgent._parse_actions(json.dumps({"actions": [
+            {"tool": "mcp_call", "server": "atlassian", "target": "discover", "arguments": {"query": "foo"}},
+            {"tool": "mcp_call", "server": "", "target": "discover", "arguments": {}},
+            {"tool": "mcp_call", "server": "atlassian", "target": "", "arguments": {}},
+            {"tool": "mcp_call", "server": "atlassian", "target": "discover", "arguments": "bad"},
+        ]}))
+        self.assertEqual(len(actions), 1)
+        self.assertEqual(actions[0].server, "atlassian")
+        self.assertEqual(actions[0].target, "discover")

@@ -83,3 +83,7 @@ class MCPLocalServerRequest(BaseModel):
 
 class MCPEnabledRequest(BaseModel):
     enabled: bool
+
+
+class MCPAllowedToolsRequest(BaseModel):
+    tools: list[str] = Field(default_factory=list, max_length=200)

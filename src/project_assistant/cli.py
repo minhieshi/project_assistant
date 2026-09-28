@@ -56,6 +56,15 @@ def main() -> None:
     p_mcp_disable = sub.add_parser("mcp-disable", help="Disable a configured MCP server")
     p_mcp_disable.add_argument("server_id")
 
+
+    p_mcp_allow = sub.add_parser("mcp-allow", help="Allow one or more MCP tools for read-only chat retrieval")
+    p_mcp_allow.add_argument("server_id")
+    p_mcp_allow.add_argument("tools", nargs="+")
+
+    p_mcp_deny = sub.add_parser("mcp-deny", help="Remove one or more MCP tools from the chat retrieval allowlist")
+    p_mcp_deny.add_argument("server_id")
+    p_mcp_deny.add_argument("tools", nargs="+")
+
     p_project_create = sub.add_parser("project-create", help="Create a managed local Git-backed project")
     p_project_create.add_argument("name")
 
@@ -136,12 +145,22 @@ def main() -> None:
             print(json.dumps(server.to_dict(), indent=2))
             return
 
+        if args.command == "mcp-allow":
+            server = mcp_registry.allow_tools(args.server_id, args.tools)
+            print(json.dumps(server.to_dict(), indent=2))
+            return
+        if args.command == "mcp-deny":
+            server = mcp_registry.deny_tools(args.server_id, args.tools)
+            print(json.dumps(server.to_dict(), indent=2))
+            return
+
         from .mcp_client import MCPManager
         manager = MCPManager(registry=mcp_registry)
         if args.command == "mcp-list":
             for item in manager.configured():
                 target = item.get("url") or " ".join([item.get("command", ""), *item.get("args", [])]).strip()
-                print(f"{item['id']}\t{item['type']}\t{item['status']}\t{target}")
+                allowed = ",".join(item.get("allowed_tools") or []) or "-"
+                print(f"{item['id']}\t{item['type']}\t{item['status']}\tallowed={allowed}\t{target}")
             return
         if args.command in {"mcp-connect", "mcp-tools"}:
             result = asyncio.run(manager.probe(args.server_id))
@@ -152,9 +171,13 @@ def main() -> None:
                 if result.error:
                     print(f"error={result.error}")
                 print("\nTools:")
+                configured = mcp_registry.get(args.server_id)
+                allowed = set(configured.allowed_tools)
                 for tool in result.tools:
                     hint = " read-only-hint" if tool.read_only_hint is True else ""
-                    print(f"- {tool.name}{hint}: {tool.description or tool.title or ''}")
+                    retrieval = " allowed-in-chat" if tool.name in allowed else ""
+                    blocked = f" blocked={tool.retrieval_block_reason}" if not tool.retrieval_eligible else ""
+                    print(f"- {tool.name}{hint}{retrieval}{blocked}: {tool.description or tool.title or ''}")
                 print("\nResources:")
                 for resource in result.resources:
                     print(f"- {resource.uri}: {resource.description or resource.title or resource.name or ''}")

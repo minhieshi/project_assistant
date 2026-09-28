@@ -319,6 +319,15 @@ export default function Home() {
     } catch (e) { setError(String(e)); } finally { setMcpBusy(""); }
   }
 
+  async function setMcpToolAllowed(id: string, current: string[], toolName: string, allowed: boolean) {
+    setMcpBusy(id); setError("");
+    const next = allowed ? Array.from(new Set([...current, toolName])) : current.filter((item) => item !== toolName);
+    try {
+      await api.setMcpAllowedTools(id, next);
+      await loadMcpServers();
+    } catch (e) { setError(String(e)); } finally { setMcpBusy(""); }
+  }
+
   async function removeMcp(id: string) {
     if (!window.confirm(`Remove MCP connection ${id}? Stored OAuth state for this connection will also be removed.`)) return;
     setMcpBusy(id); setError("");
@@ -331,7 +340,7 @@ export default function Home() {
   return (
     <div className="app-shell">
       <aside className="sidebar">
-        <div className="brand">Project Assistant <span className="small">v0.8.5</span></div>
+        <div className="brand">Project Assistant <span className="small">v0.8.7</span></div>
         {appStatus && <div className="notice" style={{ marginBottom: 12 }}>Projects: {appStatus.projects_root}<br />Portkey: {appStatus.portkey.base_url_configured ? "URL configured" : "URL missing"}</div>}
 
         <div className="section-title">Projects</div>
@@ -429,6 +438,7 @@ export default function Home() {
             connectMcp={connectMcp}
             logoutMcp={logoutMcp}
             toggleMcp={toggleMcp}
+            setMcpToolAllowed={setMcpToolAllowed}
             removeMcp={removeMcp}
             busy={mcpBusy}
           />
@@ -571,6 +581,7 @@ function ConnectionsPanel(props: {
   connectMcp: (id: string) => void;
   logoutMcp: (id: string) => void;
   toggleMcp: (id: string, enabled: boolean) => void;
+  setMcpToolAllowed: (id: string, current: string[], toolName: string, allowed: boolean) => void;
   removeMcp: (id: string) => void;
   busy: string;
 }) {
@@ -601,7 +612,7 @@ function ConnectionsPanel(props: {
         <div className="row wrap" style={{ justifyContent: "space-between" }}>
           <div>
             <h3>{server.name}</h3>
-            <div className="small">{server.id} · {server.type} · <strong>{server.status}</strong>{server.tls_compat ? " · corporate TLS compat" : ""}{server.has_credentials === true ? " · OAuth stored" : ""}</div>
+            <div className="small">{server.id} · {server.type} · <strong>{server.status}</strong>{server.tls_compat ? " · corporate TLS compat" : ""}{server.has_credentials === true ? " · OAuth stored" : ""} · {(server.allowed_tools ?? []).length} tools allowed in chat</div>
           </div>
           <div className="row wrap">
             <button className="btn primary" type="button" disabled={waiting || !server.enabled} onClick={() => props.connectMcp(server.id)}>{waiting ? "Connecting…" : server.status === "connected" ? "Reconnect" : "Connect"}</button>
@@ -614,14 +625,30 @@ function ConnectionsPanel(props: {
         {probe?.error && <div className="error" style={{ marginTop: 8 }}>{probe.error}</div>}
         {probe?.status === "connected" && <div style={{ marginTop: 10 }}>
           <div className="small">Protocol {probe.protocol_version ?? "unknown"} · {probe.tools.length} tools · {probe.resources.length} resources</div>
-          {probe.tools.length > 0 && <details style={{ marginTop: 8 }}><summary className="small">Discovered tools</summary><ul className="context-list">{probe.tools.map((tool) => <li key={tool.name}><strong>{tool.name}</strong>{tool.read_only_hint === true ? " · read-only hint" : ""}{tool.description ? ` — ${tool.description}` : ""}</li>)}</ul></details>}
+          {probe.tools.length > 0 && <details style={{ marginTop: 8 }} open><summary className="small">Discovered tools · choose which are allowed in chat retrieval</summary><ul className="context-list">{probe.tools.map((tool) => {
+            const allowedTools = server.allowed_tools ?? [];
+            const allowed = allowedTools.includes(tool.name);
+            const eligible = tool.retrieval_eligible !== false;
+            return <li key={tool.name}>
+              <label style={{ display: "flex", gap: 8, alignItems: "flex-start" }}>
+                <input
+                  type="checkbox"
+                  checked={allowed}
+                  disabled={waiting || !eligible}
+                  onChange={(e) => props.setMcpToolAllowed(server.id, allowedTools, tool.name, e.target.checked)}
+                  style={{ marginTop: 3 }}
+                />
+                <span><strong>{tool.name}</strong>{tool.read_only_hint === true ? " · server read-only hint" : ""}{allowed ? " · allowed in chat" : ""}{!eligible ? ` · blocked: ${tool.retrieval_block_reason ?? "local read-only policy"}` : ""}{tool.description ? ` — ${tool.description}` : ""}</span>
+              </label>
+            </li>;
+          })}</ul></details>}
           {probe.resources.length > 0 && <details style={{ marginTop: 8 }}><summary className="small">Resources</summary><ul className="context-list">{probe.resources.map((resource) => <li key={resource.uri}><strong>{resource.uri}</strong>{resource.description ? ` — ${resource.description}` : ""}</li>)}</ul></details>}
         </div>}
       </div>;
     })}
 
     <div className="notice" style={{ marginTop: 14 }}>
-      Tool execution is deliberately not yet exposed to the chat retrieval agent. This release establishes authenticated connectivity and capability discovery first; model-driven MCP tool calls will get a local per-server read-only allowlist in the next layer.
+      Only tools you explicitly tick above are exposed to the chat retrieval planner. Obvious write/mutation tool names are blocked locally even if a server labels them read-only. Server tool descriptions and results are treated as untrusted evidence.
     </div>
     <div className="project-scroll-end" aria-hidden="true" />
   </section>;

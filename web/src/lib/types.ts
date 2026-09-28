@@ -124,6 +124,8 @@ export type MCPTool = {
   description?: string | null;
   input_schema: Record<string, unknown>;
   read_only_hint?: boolean | null;
+  retrieval_eligible?: boolean;
+  retrieval_block_reason?: string | null;
 };
 
 export type MCPResource = {
@@ -157,6 +159,7 @@ export type MCPServer = {
   args?: string[];
   cwd?: string | null;
   tls_compat?: boolean;
+  allowed_tools?: string[];
   status: "not_checked" | "connected" | "disabled" | "auth_required" | "error" | string;
   has_credentials?: boolean | null;
   last_probe?: MCPProbe | null;

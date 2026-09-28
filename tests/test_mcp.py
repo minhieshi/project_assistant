@@ -299,3 +299,89 @@ class MCPOptionalDiscoveryCompatibilityTests(unittest.IsolatedAsyncioTestCase):
         wrapped = ExceptionGroup('task group', [RuntimeError('MCPError: Method not found')])
         self.assertTrue(MCPManager._is_method_not_found(wrapped))
         self.assertFalse(MCPManager._is_method_not_found(RuntimeError('401 Unauthorized')))
+
+
+class MCPRetrievalPolicyTests(unittest.TestCase):
+    def test_allowlist_persists_and_obvious_write_tools_are_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            registry = MCPServerRegistry(path=Path(tmp) / "mcp.json")
+            registry.add_remote("atlassian", "https://mcp.atlassian.com/v2/mcp")
+            updated = registry.set_allowed_tools("atlassian", ["discover", "executeRead"])
+            self.assertEqual(updated.allowed_tools, ["discover", "executeRead"])
+            self.assertEqual(
+                MCPServerRegistry(path=registry.path).get("atlassian").allowed_tools,
+                ["discover", "executeRead"],
+            )
+            with self.assertRaises(MCPConfigError):
+                registry.allow_tools("atlassian", ["executeWrite"])
+            with self.assertRaises(MCPConfigError):
+                registry.allow_tools("atlassian", ["createIssue"])
+
+    def test_readding_server_preserves_local_tool_approvals(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            registry = MCPServerRegistry(path=Path(tmp) / "mcp.json")
+            registry.add_remote("atlassian", "https://old.example.test/mcp")
+            registry.set_allowed_tools("atlassian", ["discover"])
+            updated = registry.add_remote("atlassian", "https://new.example.test/mcp", name="Atlassian")
+            self.assertEqual(updated.allowed_tools, ["discover"])
+
+    def test_probe_marks_obvious_write_tool_ineligible_for_retrieval(self):
+        class FakeClient:
+            protocol_version = "2026-07-28"
+            server_info = SimpleNamespace(name="Fake", version="1")
+            instructions = None
+            server_capabilities = SimpleNamespace(tools=object(), resources=None)
+
+            async def list_tools(self):
+                def tool(name):
+                    return SimpleNamespace(
+                        name=name, title=None, description=name,
+                        input_schema={"type": "object"}, annotations=None,
+                    )
+                return SimpleNamespace(tools=[tool("executeRead"), tool("executeWrite")])
+
+        class FakeManager(MCPManager):
+            @asynccontextmanager
+            async def _client_context(self, server):
+                yield FakeClient()
+
+        async def scenario():
+            with tempfile.TemporaryDirectory() as tmp:
+                registry = MCPServerRegistry(path=Path(tmp) / "mcp.json")
+                registry.add_remote("atlassian", "https://mcp.atlassian.com/v2/mcp")
+                manager = FakeManager(
+                    registry=registry,
+                    credential_store=PrivateFileCredentialStore(Path(tmp) / "auth.json"),
+                )
+                result = await manager.probe("atlassian")
+                by_name = {item.name: item for item in result.tools}
+                self.assertTrue(by_name["executeRead"].retrieval_eligible)
+                self.assertFalse(by_name["executeWrite"].retrieval_eligible)
+                self.assertIn("mutating", by_name["executeWrite"].retrieval_block_reason or "")
+
+        __import__("asyncio").run(scenario())
+
+    def test_mcp_result_is_normalised_to_provenanced_search_hit(self):
+        from project_assistant.mcp_retrieval import MCPRetrievalAccess
+
+        class FakeManager:
+            async def call_tool(self, server_id, tool_name, arguments):
+                return {
+                    "content": [{"type": "text", "text": "Confluence result text"}],
+                    "structuredContent": {"pageId": "123"},
+                    "isError": False,
+                }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            registry = MCPServerRegistry(path=Path(tmp) / "mcp.json")
+            registry.add_remote("atlassian", "https://mcp.atlassian.com/v2/mcp")
+            registry.set_allowed_tools("atlassian", ["executeRead"])
+            access = MCPRetrievalAccess(registry=registry, manager=FakeManager())  # type: ignore[arg-type]
+            access._run = lambda coroutine: __import__("asyncio").run(coroutine)  # type: ignore[method-assign]
+            hits = access.call_tool("atlassian", "executeRead", {"query": "certificate renewal"})
+            self.assertEqual(len(hits), 1)
+            self.assertIn("Confluence result text", hits[0].text)
+            self.assertIn('"pageId": "123"', hits[0].text)
+            self.assertEqual(hits[0].metadata["mcp_server"], "atlassian")
+            self.assertEqual(hits[0].metadata["mcp_tool"], "executeRead")
+            self.assertIn("mcp", hits[0].channels)

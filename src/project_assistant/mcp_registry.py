@@ -7,6 +7,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from .security import default_home, private_dir, private_file
+from .mcp_policy import mcp_tool_retrieval_block_reason
 
 
 _SERVER_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
@@ -27,6 +28,7 @@ class MCPServerConfig:
     args: list[str] = field(default_factory=list)
     cwd: str | None = None
     tls_compat: bool = False
+    allowed_tools: list[str] = field(default_factory=list)
 
     def validate(self) -> "MCPServerConfig":
         if not _SERVER_ID.fullmatch(self.id):
@@ -75,6 +77,7 @@ class MCPServerConfig:
             args=[str(item) for item in raw.get("args", [])],
             cwd=str(raw["cwd"]) if raw.get("cwd") is not None else None,
             tls_compat=bool(raw.get("tls_compat", False)),
+            allowed_tools=[str(item) for item in raw.get("allowed_tools", [])],
         ).validate()
 
     def to_dict(self) -> dict:
@@ -136,6 +139,10 @@ class MCPServerRegistry:
         return server
 
     def add_remote(self, server_id: str, url: str, *, name: str | None = None, enabled: bool = True, tls_compat: bool = False) -> MCPServerConfig:
+        try:
+            existing_allowed = list(self.get(server_id.strip()).allowed_tools)
+        except KeyError:
+            existing_allowed = []
         return self.upsert(MCPServerConfig(
             id=server_id.strip(),
             name=(name or server_id).strip(),
@@ -143,6 +150,7 @@ class MCPServerRegistry:
             url=url.strip(),
             enabled=enabled,
             tls_compat=tls_compat,
+            allowed_tools=existing_allowed,
         ))
 
     def add_local(
@@ -155,6 +163,10 @@ class MCPServerRegistry:
         name: str | None = None,
         enabled: bool = True,
     ) -> MCPServerConfig:
+        try:
+            existing_allowed = list(self.get(server_id.strip()).allowed_tools)
+        except KeyError:
+            existing_allowed = []
         return self.upsert(MCPServerConfig(
             id=server_id.strip(),
             name=(name or server_id).strip(),
@@ -163,6 +175,7 @@ class MCPServerRegistry:
             args=list(args or []),
             cwd=cwd,
             enabled=enabled,
+            allowed_tools=existing_allowed,
         ))
 
     def remove(self, server_id: str) -> None:
@@ -176,3 +189,28 @@ class MCPServerRegistry:
         current = self.get(server_id)
         updated = MCPServerConfig(**{**asdict(current), "enabled": enabled}).validate()
         return self.upsert(updated)
+
+    def set_allowed_tools(self, server_id: str, tool_names: list[str]) -> MCPServerConfig:
+        current = self.get(server_id)
+        cleaned: list[str] = []
+        for raw in tool_names:
+            name = str(raw).strip()
+            if not name or name in cleaned:
+                continue
+            if len(name) > 256:
+                raise MCPConfigError("MCP tool name is too long")
+            block = mcp_tool_retrieval_block_reason(name)
+            if block:
+                raise MCPConfigError(f"Refusing to approve MCP tool {name!r} for chat retrieval: {block}")
+            cleaned.append(name)
+        updated = MCPServerConfig(**{**asdict(current), "allowed_tools": cleaned}).validate()
+        return self.upsert(updated)
+
+    def allow_tools(self, server_id: str, tool_names: list[str]) -> MCPServerConfig:
+        current = self.get(server_id)
+        return self.set_allowed_tools(server_id, [*current.allowed_tools, *tool_names])
+
+    def deny_tools(self, server_id: str, tool_names: list[str]) -> MCPServerConfig:
+        current = self.get(server_id)
+        denied = {str(item).strip() for item in tool_names}
+        return self.set_allowed_tools(server_id, [name for name in current.allowed_tools if name not in denied])
