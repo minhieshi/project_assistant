@@ -16,6 +16,8 @@ from ..config import ProjectConfig, SourceRoot
 from ..conversations import ConversationStore
 from ..knowledge_graph import KnowledgeGraph
 from ..index_status import IndexStatusStore
+from ..mcp_client import MCPManager
+from ..mcp_registry import MCPServerRegistry
 from ..security import load_or_create_api_token, tokens_equal, validate_source_root
 from .dependencies import assistant_for, invalidate, project_path, registry
 from .schemas import (
@@ -26,13 +28,17 @@ from .schemas import (
     ProjectUpdateRequest,
     ProjectConvertToSourceRequest,
     ProjectPathRequest,
-    ImplementationBriefRequest,
     QueryRequest,
     SourceRequest,
+    MCPRemoteServerRequest,
+    MCPLocalServerRequest,
+    MCPEnabledRequest,
 )
 
 
 API_TOKEN = load_or_create_api_token()
+MCP_REGISTRY = MCPServerRegistry()
+MCP_MANAGER = MCPManager(registry=MCP_REGISTRY)
 
 
 def _safe_error_message(exc: Exception) -> str:
@@ -110,7 +116,7 @@ async def _lifespan(app: FastAPI):
                 pass
 
 
-app = FastAPI(title="Local Project Assistant", version="0.8.1", lifespan=_lifespan)
+app = FastAPI(title="Local Project Assistant", version="0.8.3", lifespan=_lifespan)
 app.add_middleware(TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost", "testserver"])
 
 
@@ -128,7 +134,7 @@ async def local_api_auth(request: Request, call_next):
 
 @app.get("/health")
 def health() -> dict:
-    return {"status": "ok", "version": "0.8.1"}
+    return {"status": "ok", "version": "0.8.3"}
 
 
 @app.get("/api/status")
@@ -138,7 +144,7 @@ def status() -> dict:
 
     settings = PortkeySettings.from_env()
     return {
-        "version": "0.8.1",
+        "version": "0.8.3",
         "projects_root": str(registry.projects_root),
         "portkey": {
             "base_url": settings.base_url,
@@ -151,6 +157,72 @@ def status() -> dict:
         },
     }
 
+
+
+@app.get("/api/mcp/servers")
+def list_mcp_servers() -> list[dict]:
+    try:
+        return MCP_MANAGER.configured()
+    except Exception as exc:
+        raise _error(exc)
+
+
+@app.post("/api/mcp/servers/remote")
+def add_remote_mcp(body: MCPRemoteServerRequest) -> dict:
+    try:
+        MCP_REGISTRY.add_remote(body.id, body.url, name=body.name, enabled=body.enabled)
+        return next(item for item in MCP_MANAGER.configured() if item["id"] == body.id)
+    except Exception as exc:
+        raise _error(exc)
+
+
+@app.post("/api/mcp/servers/local")
+def add_local_mcp(body: MCPLocalServerRequest) -> dict:
+    try:
+        MCP_REGISTRY.add_local(
+            body.id, body.command, args=body.args, cwd=body.cwd, name=body.name, enabled=body.enabled
+        )
+        return next(item for item in MCP_MANAGER.configured() if item["id"] == body.id)
+    except Exception as exc:
+        raise _error(exc)
+
+
+@app.post("/api/mcp/servers/{server_id}/enabled")
+def set_mcp_enabled(server_id: str, body: MCPEnabledRequest) -> dict:
+    try:
+        MCP_REGISTRY.set_enabled(server_id, body.enabled)
+        return next(item for item in MCP_MANAGER.configured() if item["id"] == server_id)
+    except Exception as exc:
+        raise _error(exc, 404 if isinstance(exc, KeyError) else 400)
+
+
+@app.post("/api/mcp/servers/{server_id}/connect")
+async def connect_mcp(server_id: str) -> dict:
+    try:
+        return (await MCP_MANAGER.probe(server_id)).to_dict()
+    except Exception as exc:
+        raise _error(exc, 404 if isinstance(exc, KeyError) else 400)
+
+
+@app.post("/api/mcp/servers/{server_id}/logout")
+def logout_mcp(server_id: str) -> dict:
+    try:
+        MCP_MANAGER.logout(server_id)
+        return {"ok": True}
+    except Exception as exc:
+        raise _error(exc, 404 if isinstance(exc, KeyError) else 400)
+
+
+@app.delete("/api/mcp/servers/{server_id}")
+def remove_mcp(server_id: str) -> dict:
+    try:
+        MCP_MANAGER.logout(server_id)
+        MCP_REGISTRY.remove(server_id)
+        return {"ok": True}
+    except KeyError as exc:
+        raise _error(exc, 404)
+    except Exception as exc:
+        raise _error(exc)
 
 
 @app.get("/api/projects")
@@ -364,7 +436,7 @@ def stream_chat(project_id: str, conversation_id: str, body: ChatRequest):
 
     def generate() -> Iterable[str]:
         try:
-            for event in assistant.answer_stream(conversation_id, body.message):
+            for event in assistant.answer_stream(conversation_id, body.message, mode=body.mode):
                 if event[0] == "context":
                     compiled = event[1]
                     yield _sse(
@@ -387,29 +459,6 @@ def stream_chat(project_id: str, conversation_id: str, body: ChatRequest):
             yield _sse("error", {"message": _safe_error_message(exc)})
 
     return StreamingResponse(generate(), media_type="text/event-stream", headers={"Cache-Control": "no-store"})
-
-
-@app.post("/api/projects/{project_id}/conversations/{conversation_id}/implementation-brief")
-async def prepare_implementation_brief(project_id: str, conversation_id: str, body: ImplementationBriefRequest) -> dict:
-    try:
-        assistant = assistant_for(project_id)
-        brief, compiled, debug_path = await asyncio.to_thread(assistant.prepare_implementation_brief, conversation_id, body.focus)
-        return {
-            "brief": brief,
-            "context": {
-                "estimated_tokens": compiled.estimated_tokens,
-                "routed_repos": list(compiled.routed_repos),
-                "rag_sources": list(compiled.rag_sources),
-                "graph_sources": list(compiled.graph_sources),
-                "retrieval_queries": list(compiled.retrieval_queries),
-                "retrieval_actions": list(compiled.retrieval_actions),
-                "retrieval_warnings": list(compiled.retrieval_warnings),
-                "text": compiled.text,
-                "debug_path": str(debug_path),
-            },
-        }
-    except Exception as exc:
-        raise _error(exc)
 
 
 @app.post("/api/projects/{project_id}/context")

@@ -69,10 +69,6 @@ export type ContextSummary = {
 };
 
 
-export type ImplementationBriefResponse = {
-  brief: string;
-  context: ContextSummary;
-};
 
 export type AppStatus = {
   version: string;
@@ -120,4 +116,47 @@ export type IndexStatus = {
   recent_skips: Array<{ repo: string; path: string; reason: string }>;
   recent_local_only: Array<{ repo: string; path: string; reason: string }>;
   last_error?: string | null;
+};
+
+export type MCPTool = {
+  name: string;
+  title?: string | null;
+  description?: string | null;
+  input_schema: Record<string, unknown>;
+  read_only_hint?: boolean | null;
+};
+
+export type MCPResource = {
+  uri: string;
+  name?: string | null;
+  title?: string | null;
+  description?: string | null;
+  mime_type?: string | null;
+};
+
+export type MCPProbe = {
+  server_id: string;
+  status: "connected" | "disabled" | "auth_required" | "error" | string;
+  protocol_version?: string | null;
+  server_name?: string | null;
+  server_version?: string | null;
+  instructions?: string | null;
+  tools: MCPTool[];
+  resources: MCPResource[];
+  resource_templates: Array<Record<string, unknown>>;
+  error?: string | null;
+};
+
+export type MCPServer = {
+  id: string;
+  name: string;
+  type: "remote" | "local";
+  enabled: boolean;
+  url?: string | null;
+  command?: string | null;
+  args?: string[];
+  cwd?: string | null;
+  status: "not_checked" | "connected" | "disabled" | "auth_required" | "error" | string;
+  has_credentials?: boolean | null;
+  last_probe?: MCPProbe | null;
 };

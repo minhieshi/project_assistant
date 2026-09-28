@@ -49,18 +49,18 @@ class CredentialStoreTests(unittest.TestCase):
         store = MacOSKeychainCredentialStore()
         missing = subprocess.CompletedProcess(["security"], 44, stdout="", stderr="could not be found")
         with patch("project_assistant.credentials.subprocess.run", return_value=missing):
-            self.assertIsNone(store.get("seb"))
+            self.assertIsNone(store.get("ceb"))
 
     def test_private_file_fallback_is_private_and_round_trips(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "mcp-auth.json"
             store = PrivateFileCredentialStore(path=path)
             payload = {"access_token": "a", "refresh_token": "r"}
-            store.set("SEB Internal", payload)
-            self.assertEqual(store.get("SEB Internal"), payload)
+            store.set("CEB Internal", payload)
+            self.assertEqual(store.get("CEB Internal"), payload)
             self.assertEqual(path.stat().st_mode & 0o777, 0o600)
-            store.delete("SEB Internal")
-            self.assertIsNone(store.get("SEB Internal"))
+            store.delete("CEB Internal")
+            self.assertIsNone(store.get("CEB Internal"))
 
     def test_explicit_keychain_backend_fails_when_unavailable(self):
         with patch.object(MacOSKeychainCredentialStore, "available", return_value=False):

@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 from pathlib import Path
 
 from .config import ProjectConfig, SourceRoot, init_project
 from .security import validate_source_root
+from .mcp_registry import MCPServerRegistry
 from .workspace import WorkspaceRegistry
 
 
@@ -19,6 +21,39 @@ def main() -> None:
     sub = parser.add_subparsers(dest="command", required=True)
 
     sub.add_parser("projects", help="List discovered managed/imported projects")
+
+    sub.add_parser("mcp-list", help="List configured MCP servers and connection state")
+
+    p_mcp_add = sub.add_parser("mcp-add", help="Add or update a remote Streamable HTTP MCP server")
+    p_mcp_add.add_argument("server_id")
+    p_mcp_add.add_argument("url")
+    p_mcp_add.add_argument("--name")
+    p_mcp_add.add_argument("--disabled", action="store_true")
+
+    p_mcp_local = sub.add_parser("mcp-add-local", help="Add or update a local stdio MCP server")
+    p_mcp_local.add_argument("server_id")
+    p_mcp_local.add_argument("executable")
+    p_mcp_local.add_argument("args", nargs="*")
+    p_mcp_local.add_argument("--name")
+    p_mcp_local.add_argument("--cwd")
+    p_mcp_local.add_argument("--disabled", action="store_true")
+
+    p_mcp_connect = sub.add_parser("mcp-connect", help="Connect/authenticate and discover an MCP server")
+    p_mcp_connect.add_argument("server_id")
+
+    p_mcp_tools = sub.add_parser("mcp-tools", help="Connect and list tools/resources exposed by an MCP server")
+    p_mcp_tools.add_argument("server_id")
+
+    p_mcp_logout = sub.add_parser("mcp-logout", help="Delete locally stored OAuth state for an MCP server")
+    p_mcp_logout.add_argument("server_id")
+
+    p_mcp_remove = sub.add_parser("mcp-remove", help="Remove an MCP server and its stored OAuth state")
+    p_mcp_remove.add_argument("server_id")
+
+    p_mcp_enable = sub.add_parser("mcp-enable", help="Enable a configured MCP server")
+    p_mcp_enable.add_argument("server_id")
+    p_mcp_disable = sub.add_parser("mcp-disable", help="Disable a configured MCP server")
+    p_mcp_disable.add_argument("server_id")
 
     p_project_create = sub.add_parser("project-create", help="Create a managed local Git-backed project")
     p_project_create.add_argument("name")
@@ -58,10 +93,7 @@ def main() -> None:
     p_chat = sub.add_parser("chat")
     p_chat.add_argument("conversation_id")
     p_chat.add_argument("message")
-
-    p_handoff = sub.add_parser("handoff", help="Prepare a read-only OpenCode implementation brief")
-    p_handoff.add_argument("conversation_id")
-    p_handoff.add_argument("--focus", default="")
+    p_chat.add_argument("--guided", action="store_true", help="Use step-by-step guided implementation mode")
 
     p_search = sub.add_parser("search")
     p_search.add_argument("query")
@@ -82,6 +114,61 @@ def main() -> None:
         for project in WorkspaceRegistry().list():
             print(f"{project.id}\t{project.kind}\t{project.name}\t{project.path}")
         return
+
+    if args.command.startswith("mcp-"):
+        mcp_registry = MCPServerRegistry()
+        if args.command == "mcp-add":
+            server = mcp_registry.add_remote(
+                args.server_id, args.url, name=args.name, enabled=not args.disabled
+            )
+            print(json.dumps(server.to_dict(), indent=2))
+            return
+        if args.command == "mcp-add-local":
+            server = mcp_registry.add_local(
+                args.server_id, args.executable, args=args.args, cwd=args.cwd,
+                name=args.name, enabled=not args.disabled,
+            )
+            print(json.dumps(server.to_dict(), indent=2))
+            return
+        if args.command in {"mcp-enable", "mcp-disable"}:
+            server = mcp_registry.set_enabled(args.server_id, args.command == "mcp-enable")
+            print(json.dumps(server.to_dict(), indent=2))
+            return
+
+        from .mcp_client import MCPManager
+        manager = MCPManager(registry=mcp_registry)
+        if args.command == "mcp-list":
+            for item in manager.configured():
+                target = item.get("url") or " ".join([item.get("command", ""), *item.get("args", [])]).strip()
+                print(f"{item['id']}\t{item['type']}\t{item['status']}\t{target}")
+            return
+        if args.command in {"mcp-connect", "mcp-tools"}:
+            result = asyncio.run(manager.probe(args.server_id))
+            if args.command == "mcp-connect":
+                print(json.dumps(result.to_dict(), indent=2))
+            else:
+                print(f"status={result.status} protocol={result.protocol_version or 'unknown'} server={result.server_name or args.server_id}")
+                if result.error:
+                    print(f"error={result.error}")
+                print("\nTools:")
+                for tool in result.tools:
+                    hint = " read-only-hint" if tool.read_only_hint is True else ""
+                    print(f"- {tool.name}{hint}: {tool.description or tool.title or ''}")
+                print("\nResources:")
+                for resource in result.resources:
+                    print(f"- {resource.uri}: {resource.description or resource.title or resource.name or ''}")
+            return
+        if args.command == "mcp-logout":
+            manager.logout(args.server_id)
+            print(f"Logged out of {args.server_id}")
+            return
+        if args.command == "mcp-remove":
+            try:
+                manager.logout(args.server_id)
+            finally:
+                mcp_registry.remove(args.server_id)
+            print(f"Removed {args.server_id}")
+            return
 
     if args.command == "project-create":
         project = WorkspaceRegistry().create(args.name)
@@ -175,11 +262,8 @@ def main() -> None:
         print(conv.id)
         print(conv.path)
     elif args.command == "chat":
-        print(assistant.answer(args.conversation_id, args.message))
-    elif args.command == "handoff":
-        brief, compiled, debug_path = assistant.prepare_implementation_brief(args.conversation_id, args.focus)
-        print(brief)
-        print(f"\n[context snapshot: {debug_path}]", flush=True)
+        mode = "guided" if args.guided else "chat"
+        print(assistant.answer(args.conversation_id, args.message, mode=mode))
     elif args.command == "search":
         for hit in assistant.indexer.search(args.query):
             line = ""

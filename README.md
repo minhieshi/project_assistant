@@ -1,81 +1,59 @@
-# Local Project Assistant — v0.8.1
+# Local Project Assistant — v0.8.3
 
-Project Assistant is a local-first **read-only project intelligence layer** for source-heavy engineering work. It keeps persistent project conversations and multi-repository knowledge locally, retrieves the right code/configuration context, and uses the configured enterprise Portkey routes for GPT-5.6 reasoning and embeddings.
+Project Assistant recreates the useful parts of the enterprise ChatGPT browser experience locally while using approved Portkey routes for GPT-5.6 inference and embeddings. It keeps persistent project conversations, indexes multiple repositories, compiles high-signal project context, maintains consolidated user/project memory, and can produce source-grounded **copy-pasteable implementation code** without writing to registered source repositories itself.
 
 Its boundary is deliberate:
 
 ```text
 Project Assistant
   understand / retrieve / investigate / design
-  prepare a source-grounded implementation brief
+  break larger changes into small implementation steps
+  author complete code/config/tests for the current step
                     |
                     v
-                 OpenCode
-  edit / run commands / test / iterate / commit
+                  Human
+  review / copy-paste / run / test / commit
 ```
 
-Project Assistant does **not** edit registered source repositories, stage/apply patches, or expose arbitrary shell execution.
+Registered source repositories remain read-only to Project Assistant. It does not apply patches, stage files, commit, or expose arbitrary shell execution.
 
-## v0.8.1 — MCP credential foundation
+## User guide
 
-- Adds a reusable MCP credential-store abstraction for upcoming remote MCP connectivity.
-- Uses the native macOS Keychain by default on macOS for OAuth access/refresh tokens and client-registration metadata.
-- Keeps MCP credentials out of project configuration and conversation history.
-- Supports an explicit private-file fallback with mode `0600` for development/non-macOS environments.
-- Preserves all v0.8.0 consolidated conversation memory behaviour unchanged.
+For installation, environment variables, project/source management, **guided implementation**, conversation consolidation and memory locations, MCP configuration/authentication, the complete CLI/API reference, persistent-state layout and troubleshooting, see **[`docs/USER_GUIDE.md`](docs/USER_GUIDE.md)**.
 
-## v0.8.0 — Consolidated conversation memory
+## v0.8.3 — Guided implementation + memory + MCP
 
-Project Assistant now treats raw conversation history as evidence rather than the default long-term memory source.
+v0.8.3 merges the three active feature strands into one build:
 
-Every 24 hours, while the local API is running, it checks each project for conversation entries added since the previous successful consolidation. A due project is consolidated into:
+- **Guided implementation** from the v0.8.0.03 branch replaces the OpenCode handoff workflow.
+- **Conversation consolidation + user memory** remain from the memory-enabled v0.8.0 branch.
+- **Authenticated MCP connectivity** remains from v0.8.2.
 
-- `.assistant/generated/consolidations/YYYY-MM-DD.md` — accepted decisions, implemented work, debugging lessons, unresolved work, useful rejected approaches and observed user working preferences;
-- `.assistant/generated/user_memory.md` — a compact, evolving profile of durable working/communication preferences derived from the consolidations rather than from every individual chat message;
-- `.assistant/consolidation_state.json` — the last attempt and last processed conversation timestamp.
+The composer now has two modes:
 
-The context compiler now uses this order:
+- **Chat** — project questions, debugging, architecture, design and investigation.
+- **Guided implementation** — source-grounded coding with a human approval/write boundary.
+
+For a non-trivial coding request, Guided implementation:
+
+1. performs conversation-aware RAG plus bounded live read-only exploration;
+2. breaks the work into 2–6 small coherent steps;
+3. explains the approach and stops before implementation code;
+4. waits for the user to confirm the next step;
+5. re-reads the relevant live source for that turn;
+6. emits complete copy-pasteable code for **one step only**;
+7. gives validation commands/checks and stops again for user input.
+
+For each changed artefact, the model is instructed to state:
 
 ```text
-current active conversation
-user memory
-consolidated history
-project memory / project RAG / graph
-raw historical conversations only as fallback
+Repository: <registered repository>
+File: <relative/path>
+Action: Create file | Replace file | Replace function/class/section | Insert at exact anchor
+Why: <short explanation>
 ```
 
-Normal project RAG filters conversation and generated-memory chunks out of the project-code retrieval path, so an abandoned idea from an old chat cannot outrank current source evidence simply because it is semantically similar.
-
-A manual run is available with:
-
-```bash
-project-assistant --project /path/to/project consolidate
-# optional manual override before 24 hours:
-project-assistant --project /path/to/project consolidate --force
-```
-
-The backend also exposes `POST /api/projects/{project_id}/memory/consolidate` and `GET /api/projects/{project_id}/memory/status`; `?force=true` explicitly overrides the 24-hour guard. Set `MEMORY_CONSOLIDATION_ENABLED=0` to disable the automatic 24-hour checker.
-
-## v0.7.9 — OpenCode handoff
-
-The chat composer now has two modes:
-
-- **Chat** — ask project questions, debug integrations, trace behaviour, discuss architecture/design and investigate failures.
-- **OpenCode brief** — package the current conversation into a structured implementation handoff. You can optionally type a narrower focus, or leave the box blank to use the current conversation.
-
-The generated brief is persisted in the conversation Markdown and includes, where supported by retrieved evidence:
-
-- problem / desired outcome;
-- current understanding and root cause;
-- integration path across repositories;
-- relevant repositories, relative paths and symbols;
-- ordered implementation direction without a patch;
-- constraints and behaviours to preserve;
-- validation/tests;
-- unresolved checks for OpenCode;
-- retrieval evidence.
-
-Each generated **OpenCode Implementation Brief** has a **Copy for OpenCode** button.
+Replacement code must be complete for the stated unit: no `...`, `existing code`, `rest unchanged`, omitted imports or pseudo-code inside replacement blocks. The UI provides **Copy response** and per-code-block **Copy** controls.
 
 ## Architecture
 
@@ -89,6 +67,7 @@ Next.js 127.0.0.1:3000
 FastAPI 127.0.0.1:8000
   |
   +-- Markdown conversation history
+  +-- conversation consolidation + user memory
   +-- managed/imported project discovery
   +-- context compiler
   +-- SQLite FTS5 exact/lexical retrieval
@@ -96,6 +75,7 @@ FastAPI 127.0.0.1:8000
   +-- Chroma semantic retrieval
   +-- bounded multi-round retrieval planner
   +-- controlled live read-only filesystem/Git tools
+  +-- MCP registry + OAuth/Keychain + capability discovery
   |
   v
 Configured enterprise Portkey gateway
@@ -105,13 +85,12 @@ Configured enterprise Portkey gateway
 
 ## Retrieval
 
-Normal chat and OpenCode handoffs automatically perform conversation-aware retrieval. **Compile context** is an inspection/debugging feature; it is not required before asking a question.
-
-The retrieval path combines:
+Normal Chat and Guided implementation automatically perform conversation-aware retrieval. **Compile context** remains an inspection/debugging feature and is not required before asking a question.
 
 ```text
 current request + recent conversation
         |
+        +-- user memory / consolidated history
         +-- exact identifiers / paths / symbols
         +-- SQLite FTS5 lexical search
         +-- semantic vector retrieval
@@ -131,63 +110,67 @@ bounded GPT retrieval planner
 compiled high-signal project context
 ```
 
-Live file/Git tools operate only inside the Project Assistant workspace and explicitly registered source roots. They do not expose an arbitrary shell and do not write to source repositories.
+Guided implementation has a stronger retrieval contract: likely target files must be located and read live where possible before the model declares context sufficient for copy-paste code generation. Short continuation turns such as `yes`, `next`, or `do step 2` use recent conversation state to recover the target files.
 
-For **OpenCode brief** mode, the retrieval planner is specifically instructed to locate likely implementation/integration files, follow cross-repository dependencies, read important files live where possible, and return concrete repository/path/symbol references for the coding agent.
+## Conversation consolidation and user memory
 
-## Projects and source roots
-
-A Project Assistant project owns its conversations/settings/indexes. Source repositories can live anywhere allowed by the source-root security policy and remain independent repositories/directories.
-
-Recommended layout:
+Raw conversation Markdown remains the audit trail. Long-term conversational context is derived through incremental consolidations:
 
 ```text
-~/.project-assistant/projects/mainframe-platform/   # Project Assistant workspace
-~/work/mainframe/ansible/                           # registered source
-~/work/mainframe/java/                              # registered source
-~/work/mainframe/config/                            # registered source, Git optional
+.assistant/conversations/                       raw chat history
+.assistant/generated/consolidations/YYYY-MM-DD.md
+.assistant/generated/user_memory.md             durable working preferences
+.assistant/consolidation_state.json             incremental checkpoint
 ```
 
-Register each independent child source rather than making a parent folder into a nested Git repository.
+By default the API checks hourly and consolidation runs when the configured interval is due (24 hours by default). If the app was off, the next API startup catches up when the project is due.
 
-Both Git-backed and plain source directories are supported.
+Manual consolidation:
 
-## Indexing
-
-**Reindex changed files** is incremental:
-
-- unchanged file content is not re-embedded;
-- branch/HEAD metadata can refresh independently of content fingerprints;
-- unsuitable archives/compiled/binary/generated/oversized/sensitive artefacts are skipped;
-- provider-rejected or non-egressable content can remain available to local lexical/graph retrieval where appropriate;
-- indexing status and skip/local-only reasons are persisted and shown in the UI.
-
-The confirmed embedding route shape remains a direct HTTP equivalent of:
-
-```text
-POST $PORTKEY_BASE_URL/embeddings
-x-portkey-api-key: $PORTKEY_API_KEY
-Content-Type: application/json
-
-{
-  "model": "@bedrock-au/amazon.titan-embed-text-v2:0",
-  "input": "text"
-}
+```bash
+project-assistant --project /path/to/project consolidate
+project-assistant --project /path/to/project consolidate --force
 ```
+
+The context compiler prefers current conversation + consolidated history/user memory. Raw historical chats are fallback evidence rather than normal project-code RAG.
+
+## MCP connectivity
+
+v0.8.3 includes:
+
+- remote **Streamable HTTP** MCP connections;
+- automatic OAuth discovery/browser sign-in through the MCP Python SDK;
+- OAuth token and client-registration persistence in **macOS Keychain** by default;
+- silent token refresh when supported by the server;
+- local **stdio** MCP configuration and subprocess lifecycle;
+- UI/CLI connection state plus tool/resource/template discovery.
+
+Example remote servers:
+
+```bash
+project-assistant mcp-add atlassian https://mcp.atlassian.com/v2/mcp --name Atlassian
+project-assistant mcp-connect atlassian
+
+project-assistant mcp-add ceb https://YOUR-INTERNAL-CEB-MCP/mcp --name CEB
+project-assistant mcp-connect ceb
+```
+
+Example local stdio server:
+
+```bash
+project-assistant mcp-add-local zowe python -m project_assistant_mcp.zowe --name Zowe
+project-assistant mcp-connect zowe
+```
+
+**Current MCP boundary:** connection/authentication/discovery are implemented, but MCP tools are not yet exposed to the chat retrieval agent automatically. The next safety layer is a local per-server read-only allowlist + normalisation of MCP results into retrieval evidence.
 
 ## Security boundary
-
-### Browser/API isolation
 
 - FastAPI binds to loopback by default.
 - Every `/api/*` request requires a generated local API token.
 - Next.js adds that token server-side; browser JavaScript does not receive it.
 - Portkey credentials remain backend-only.
-- MCP OAuth credentials use the native macOS Keychain by default on macOS and are kept out of project configuration.
-- `PROJECT_ASSISTANT_MCP_AUTH_STORE=file` is available only as an explicit portable fallback and writes `~/.project-assistant/mcp-auth.json` with private permissions.
-
-### Filesystem and egress controls
-
+- MCP OAuth credentials use macOS Keychain by default.
 - source roots must pass registration validation;
 - symlink escapes outside registered roots are rejected;
 - sensitive credential paths/files are excluded;
@@ -195,25 +178,7 @@ Content-Type: application/json
 - local-only retrieval can remain available when egress is not permitted;
 - retrieved source is treated as untrusted evidence.
 
-### Source mutation
-
-The active v0.7.9 API/UI/CLI has no source patch staging/apply workflow. Registered source repositories are read through controlled tools only. Historical `change_gate.py` code/data is retained for compatibility with older project state but is not wired into the normal v0.7.9 execution path.
-
-## Persistent local state
-
-Project-local assistant state lives under `.assistant/`, including the semantic/lexical/graph indexes, index metadata/status, context debug snapshots and conversation Markdown. Managed/imported project discovery state lives under `~/.project-assistant/`.
-
-## Frontend performance
-
-The v0.7.6 performance work remains in place:
-
-- composer text is isolated from page-level React state;
-- historical Markdown messages are memoised;
-- streamed output is buffered rather than re-rendering per tiny token fragment;
-- compiled context is collapsed by default;
-- off-screen historical messages use browser content visibility.
-
-macOS Dictation works directly in the normal textarea; Project Assistant has no microphone/Whisper integration.
+Project Assistant may **author** code but may not **apply** it.
 
 ## Install / upgrade
 
@@ -234,24 +199,29 @@ npm install
 cd ..
 ```
 
-Configure the required Portkey environment variables in your shell, then start the backend and frontend using your existing workflow or `scripts/dev.sh`.
+Configure the Portkey environment variables, then start with your existing workflow or:
 
-No full reindex is required for v0.8.0. New consolidations and user memory are indexed as they are written; existing raw conversations remain available for fallback retrieval.
+```bash
+./scripts/dev.sh
+```
 
-## CLI
+No full reindex is required solely for the v0.8.3 workflow merge.
 
-Useful commands include:
+## CLI examples
 
 ```bash
 project-assistant projects
 project-assistant --project /path/to/project index
+project-assistant --project /path/to/project consolidate
 project-assistant --project /path/to/project chat-new "Investigation"
 project-assistant --project /path/to/project chat <conversation-id> "Why is this failing?"
-project-assistant --project /path/to/project handoff <conversation-id>
-project-assistant --project /path/to/project handoff <conversation-id> --focus "Fix the ANSWER integration issue"
+project-assistant --project /path/to/project chat <conversation-id> "Implement the next step" --guided
 project-assistant --project /path/to/project context "How does asset rebuild flow across repos?"
-project-assistant --project /path/to/project search "IKJEFT01"
-project-assistant --project /path/to/project graph "AssetLookup"
+
+project-assistant mcp-list
+project-assistant mcp-add atlassian https://mcp.atlassian.com/v2/mcp --name Atlassian
+project-assistant mcp-connect atlassian
+project-assistant mcp-tools atlassian
 ```
 
-`handoff` prints the generated OpenCode implementation brief and stores it in the conversation.
+The complete command-by-command reference is in [`docs/USER_GUIDE.md`](docs/USER_GUIDE.md#11-complete-cli-reference).

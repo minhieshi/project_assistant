@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { FormEvent, isValidElement, memo, useCallback, useEffect, useMemo, useRef, useState, type ComponentPropsWithoutRef, type ReactNode } from "react";
 import { api, streamChat } from "@/lib/api";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -12,6 +12,7 @@ import type {
   Project,
   AppStatus,
   IndexStatus,
+  MCPServer,
 } from "@/lib/types";
 
 function timeLabel(value?: string | null) {
@@ -29,7 +30,7 @@ export default function Home() {
   const [conversationId, setConversationId] = useState<string>("");
   const [conversation, setConversation] = useState<ConversationDetail | null>(null);
   const [context, setContext] = useState<ContextSummary | null>(null);
-  const [tab, setTab] = useState<"chat" | "project">("chat");
+  const [tab, setTab] = useState<"chat" | "project" | "connections">("chat");
   const [streamingText, setStreamingText] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -43,6 +44,11 @@ export default function Home() {
   const [convertTargetId, setConvertTargetId] = useState("");
   const [convertSourceName, setConvertSourceName] = useState("");
   const [contextQuery, setContextQuery] = useState("");
+  const [mcpServers, setMcpServers] = useState<MCPServer[]>([]);
+  const [mcpId, setMcpId] = useState("");
+  const [mcpName, setMcpName] = useState("");
+  const [mcpUrl, setMcpUrl] = useState("");
+  const [mcpBusy, setMcpBusy] = useState<string>("");
   const bottomRef = useRef<HTMLDivElement>(null);
 
   const currentProject = useMemo(() => projects.find((project) => project.id === projectId) ?? null, [projects, projectId]);
@@ -67,9 +73,13 @@ export default function Home() {
     setIndexStatus(await api.indexStatus(pid));
   }, []);
 
+  const loadMcpServers = useCallback(async () => {
+    setMcpServers(await api.mcpServers());
+  }, []);
+
   useEffect(() => {
-    Promise.all([loadProjects(), api.status().then(setAppStatus)]).catch((e) => setError(String(e)));
-  }, [loadProjects]);
+    Promise.all([loadProjects(), loadMcpServers(), api.status().then(setAppStatus)]).catch((e) => setError(String(e)));
+  }, [loadProjects, loadMcpServers]);
 
   useEffect(() => {
     setConversation(null);
@@ -146,9 +156,9 @@ export default function Home() {
     } catch (e) { setError(String(e)); } finally { setBusy(false); }
   }
 
-  const send = useCallback(async (textValue: string, sendMode: "chat" | "handoff") => {
+  const send = useCallback(async (textValue: string, sendMode: "chat" | "guided") => {
     const text = textValue.trim();
-    if (!projectId || !conversationId || busy || (sendMode === "chat" && !text)) return;
+    if (!projectId || !conversationId || busy || !text) return;
     setBusy(true); setError(""); setStreamingText("");
 
     let pendingDelta = "";
@@ -162,25 +172,19 @@ export default function Home() {
     };
 
     try {
-      if (sendMode === "handoff") {
-        const result = await api.implementationBrief(projectId, conversationId, text);
-        setContext(result.context);
-        await loadConversation(projectId, conversationId);
-      } else {
-        const optimistic: ConversationEntry = { title: "User", timestamp: new Date().toISOString(), body: text, role: "user" };
-        setConversation((current) => current ? { ...current, entries: [...current.entries, optimistic] } : current);
-        await streamChat(projectId, conversationId, text, {
-          onContext: (value) => setContext(value),
-          onDelta: (delta) => {
-            pendingDelta += delta;
-            if (flushTimer === null) flushTimer = window.setTimeout(flushStreaming, 50);
-          },
-        });
-        if (flushTimer !== null) window.clearTimeout(flushTimer);
-        flushStreaming();
-        await loadConversation(projectId, conversationId);
-        setStreamingText("");
-      }
+      const optimistic: ConversationEntry = { title: "User", timestamp: new Date().toISOString(), body: text, role: "user" };
+      setConversation((current) => current ? { ...current, entries: [...current.entries, optimistic] } : current);
+      await streamChat(projectId, conversationId, text, sendMode, {
+        onContext: (value) => setContext(value),
+        onDelta: (delta) => {
+          pendingDelta += delta;
+          if (flushTimer === null) flushTimer = window.setTimeout(flushStreaming, 50);
+        },
+      });
+      if (flushTimer !== null) window.clearTimeout(flushTimer);
+      flushStreaming();
+      await loadConversation(projectId, conversationId);
+      setStreamingText("");
       await loadConversations(projectId);
     } catch (e) {
       if (flushTimer !== null) window.clearTimeout(flushTimer);
@@ -279,10 +283,54 @@ export default function Home() {
     } catch (e) { setError(String(e)); } finally { setBusy(false); }
   }
 
+  async function addRemoteMcp(event: FormEvent) {
+    event.preventDefault();
+    if (!mcpId.trim() || !mcpUrl.trim()) return;
+    setMcpBusy("add"); setError("");
+    try {
+      await api.addRemoteMcp(mcpId.trim(), mcpUrl.trim(), mcpName.trim() || undefined);
+      setMcpId(""); setMcpName(""); setMcpUrl("");
+      await loadMcpServers();
+    } catch (e) { setError(String(e)); } finally { setMcpBusy(""); }
+  }
+
+  async function connectMcp(id: string) {
+    setMcpBusy(id); setError("");
+    try {
+      await api.connectMcp(id);
+      await loadMcpServers();
+    } catch (e) { setError(String(e)); } finally { setMcpBusy(""); }
+  }
+
+  async function logoutMcp(id: string) {
+    setMcpBusy(id); setError("");
+    try {
+      await api.logoutMcp(id);
+      await loadMcpServers();
+    } catch (e) { setError(String(e)); } finally { setMcpBusy(""); }
+  }
+
+  async function toggleMcp(id: string, enabled: boolean) {
+    setMcpBusy(id); setError("");
+    try {
+      await api.setMcpEnabled(id, enabled);
+      await loadMcpServers();
+    } catch (e) { setError(String(e)); } finally { setMcpBusy(""); }
+  }
+
+  async function removeMcp(id: string) {
+    if (!window.confirm(`Remove MCP connection ${id}? Stored OAuth state for this connection will also be removed.`)) return;
+    setMcpBusy(id); setError("");
+    try {
+      await api.removeMcp(id);
+      await loadMcpServers();
+    } catch (e) { setError(String(e)); } finally { setMcpBusy(""); }
+  }
+
   return (
     <div className="app-shell">
       <aside className="sidebar">
-        <div className="brand">Project Assistant <span className="small">v0.8.1</span></div>
+        <div className="brand">Project Assistant <span className="small">v0.8.3</span></div>
         {appStatus && <div className="notice" style={{ marginBottom: 12 }}>Projects: {appStatus.projects_root}<br />Portkey: {appStatus.portkey.base_url_configured ? "URL configured" : "URL missing"}</div>}
 
         <div className="section-title">Projects</div>
@@ -327,6 +375,7 @@ export default function Home() {
           <div className="tabs">
             <button className={`tab ${tab === "chat" ? "active" : ""}`} onClick={() => setTab("chat")}>Chat</button>
             <button className={`tab ${tab === "project" ? "active" : ""}`} onClick={() => setTab("project")}>Project</button>
+            <button className={`tab ${tab === "connections" ? "active" : ""}`} onClick={() => setTab("connections")}>Connections</button>
           </div>
         </header>
 
@@ -341,7 +390,7 @@ export default function Home() {
             </section>
             {conversation && <Composer busy={busy} onSend={send} />}
           </>
-        ) : (
+        ) : tab === "project" ? (
           <ProjectPanel
             project={currentProject}
             projects={projects}
@@ -364,6 +413,22 @@ export default function Home() {
             forgetImportedProject={forgetImportedProject}
             indexStatus={indexStatus}
           />
+        ) : (
+          <ConnectionsPanel
+            servers={mcpServers}
+            mcpId={mcpId}
+            mcpName={mcpName}
+            mcpUrl={mcpUrl}
+            setMcpId={setMcpId}
+            setMcpName={setMcpName}
+            setMcpUrl={setMcpUrl}
+            addRemoteMcp={addRemoteMcp}
+            connectMcp={connectMcp}
+            logoutMcp={logoutMcp}
+            toggleMcp={toggleMcp}
+            removeMcp={removeMcp}
+            busy={mcpBusy}
+          />
         )}
       </main>
 
@@ -375,8 +440,8 @@ export default function Home() {
         </div>
         <ContextPanel context={context} />
 
-        <div className="section-title">OpenCode handoff</div>
-        <div className="notice">Project Assistant is read-only project intelligence. Use <strong>Prepare OpenCode brief</strong> in the composer to package the current investigation, source paths, integration context, constraints and validation plan for your coding agent.</div>
+        <div className="section-title">Guided implementation</div>
+        <div className="notice">Use <strong>Guided implementation</strong> for coding work. Project Assistant will break larger changes into small steps, pause between steps, re-read live source before coding, and return complete copy-pasteable code while keeping repository writes under your control.</div>
       </aside>
     </div>
   );
@@ -385,10 +450,10 @@ export default function Home() {
 const Message = memo(function Message({ entry }: { entry: ConversationEntry }) {
   const role = entry.role === "event" ? "event" : entry.role;
   const markdown = entry.role !== "user";
-  const isHandoff = entry.title === "OpenCode Implementation Brief";
+  const canCopy = entry.role !== "user";
   const [copied, setCopied] = useState(false);
 
-  async function copyBrief() {
+  async function copyMessage() {
     try {
       await navigator.clipboard.writeText(entry.body);
       setCopied(true);
@@ -398,10 +463,10 @@ const Message = memo(function Message({ entry }: { entry: ConversationEntry }) {
     }
   }
 
-  return <div className={`message ${role} ${isHandoff ? "handoff-message" : ""}`}>
+  return <div className={`message ${role}`}>
     <div className="message-heading">
       <div className="message-label">{entry.title}{entry.timestamp ? ` · ${timeLabel(entry.timestamp)}` : ""}</div>
-      {isHandoff && <button type="button" className="btn compact" onClick={() => void copyBrief()}>{copied ? "Copied" : "Copy for OpenCode"}</button>}
+      {canCopy && <button type="button" className="btn compact" onClick={() => void copyMessage()}>{copied ? "Copied" : "Copy response"}</button>}
     </div>
     {markdown ? (
       <div className="message-body markdown">
@@ -409,12 +474,42 @@ const Message = memo(function Message({ entry }: { entry: ConversationEntry }) {
           remarkPlugins={[remarkGfm]}
           components={{
             a: ({ href, children }) => <a href={href} target="_blank" rel="noreferrer">{children}</a>,
+            pre: MarkdownPre,
           }}
         >{entry.body}</ReactMarkdown>
       </div>
     ) : <div className="message-body">{entry.body}</div>}
   </div>;
 });
+
+function markdownText(node: ReactNode): string {
+  if (typeof node === "string" || typeof node === "number") return String(node);
+  if (Array.isArray(node)) return node.map(markdownText).join("");
+  if (isValidElement<{ children?: ReactNode }>(node)) return markdownText(node.props.children);
+  return "";
+}
+
+function MarkdownPre({ children, ...props }: ComponentPropsWithoutRef<"pre">) {
+  const [copied, setCopied] = useState(false);
+  const text = markdownText(children).replace(/\n$/, "");
+  const className = isValidElement<{ className?: string }>(children) ? children.props.className ?? "" : "";
+  const language = className.startsWith("language-") ? className.slice("language-".length) : "code";
+
+  async function copyCode() {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1400);
+    } catch {
+      setCopied(false);
+    }
+  }
+
+  return <div className="code-frame">
+    <div className="code-toolbar"><span>{language}</span><button type="button" className="code-copy" onClick={() => void copyCode()}>{copied ? "Copied" : "Copy"}</button></div>
+    <pre {...props}>{children}</pre>
+  </div>;
+}
 
 function StreamingMessage({ text }: { text: string }) {
   return <div className="message assistant streaming-message">
@@ -423,14 +518,14 @@ function StreamingMessage({ text }: { text: string }) {
   </div>;
 }
 
-const Composer = memo(function Composer({ busy, onSend }: { busy: boolean; onSend: (text: string, mode: "chat" | "handoff") => Promise<void> }) {
+const Composer = memo(function Composer({ busy, onSend }: { busy: boolean; onSend: (text: string, mode: "chat" | "guided") => Promise<void> }) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const [mode, setMode] = useState<"chat" | "handoff">("chat");
+  const [mode, setMode] = useState<"chat" | "guided">("chat");
 
   function submit() {
     const textarea = textareaRef.current;
     const text = textarea?.value.trim() ?? "";
-    if (!textarea || busy || (mode === "chat" && !text)) return;
+    if (!textarea || busy || !text) return;
     textarea.value = "";
     void onSend(text, mode);
   }
@@ -443,21 +538,88 @@ const Composer = memo(function Composer({ busy, onSend }: { busy: boolean; onSen
         onKeyDown={(event) => {
           if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); submit(); }
         }}
-        placeholder={mode === "handoff" ? "Optional handoff focus. Leave blank to package the current conversation for OpenCode." : "Ask about this project..."}
+        placeholder={mode === "guided" ? "Describe the change. Larger tasks will be split into small steps and paused for your approval." : "Ask about this project..."}
       />
       <div className="composer-actions">
         <div className="row wrap">
           <div className="mode">
             <button type="button" className={mode === "chat" ? "active" : ""} onClick={() => setMode("chat")}>Chat</button>
-            <button type="button" className={mode === "handoff" ? "active" : ""} onClick={() => setMode("handoff")}>OpenCode brief</button>
+            <button type="button" className={mode === "guided" ? "active" : ""} onClick={() => setMode("guided")}>Guided implementation</button>
           </div>
         </div>
-        <button type="button" className="btn primary" onClick={submit} disabled={busy}>{busy ? "Working…" : mode === "handoff" ? "Prepare OpenCode brief" : "Send"}</button>
-        <span className="small">Read-only source access. OpenCode owns edits, commands, tests and Git changes. macOS Dictation works in this box.</span>
+        <button type="button" className="btn primary" onClick={submit} disabled={busy}>{busy ? "Working…" : "Send"}</button>
+        <span className="small">Read-only source access. Guided mode can author complete copy-pasteable code; you remain the write/commit boundary. macOS Dictation works in this box.</span>
       </div>
     </div>
   </div>;
 });
+
+function ConnectionsPanel(props: {
+  servers: MCPServer[];
+  mcpId: string;
+  mcpName: string;
+  mcpUrl: string;
+  setMcpId: (value: string) => void;
+  setMcpName: (value: string) => void;
+  setMcpUrl: (value: string) => void;
+  addRemoteMcp: (event: FormEvent) => void;
+  connectMcp: (id: string) => void;
+  logoutMcp: (id: string) => void;
+  toggleMcp: (id: string, enabled: boolean) => void;
+  removeMcp: (id: string) => void;
+  busy: string;
+}) {
+  return <section className="chat-scroll">
+    <h2 style={{ marginTop: 0 }}>MCP connections</h2>
+    <div className="notice">
+      Remote MCPs use Streamable HTTP. Authentication is discovered automatically: when OAuth is required, Project Assistant opens your browser, receives the loopback callback, and stores OAuth state in macOS Keychain by default. No token is stored in this registry.
+    </div>
+
+    <div className="card" style={{ marginTop: 14 }}>
+      <h3>Add remote MCP</h3>
+      <form className="form-stack" onSubmit={props.addRemoteMcp}>
+        <input className="input" value={props.mcpId} onChange={(e) => props.setMcpId(e.target.value)} placeholder="id, e.g. atlassian or ceb" />
+        <input className="input" value={props.mcpName} onChange={(e) => props.setMcpName(e.target.value)} placeholder="Optional display name" />
+        <input className="input" value={props.mcpUrl} onChange={(e) => props.setMcpUrl(e.target.value)} placeholder="https://…/mcp" />
+        <button className="btn primary" disabled={props.busy === "add" || !props.mcpId.trim() || !props.mcpUrl.trim()}>Add connection</button>
+      </form>
+      <div className="small" style={{ marginTop: 8 }}>Example Atlassian endpoint: https://mcp.atlassian.com/v2/mcp</div>
+    </div>
+
+    <div className="section-title">Configured</div>
+    {props.servers.length === 0 && <div className="notice">No MCP servers configured yet.</div>}
+    {props.servers.map((server) => {
+      const probe = server.last_probe;
+      const waiting = props.busy === server.id;
+      return <div className="card" key={server.id}>
+        <div className="row wrap" style={{ justifyContent: "space-between" }}>
+          <div>
+            <h3>{server.name}</h3>
+            <div className="small">{server.id} · {server.type} · <strong>{server.status}</strong>{server.has_credentials === true ? " · OAuth stored" : ""}</div>
+          </div>
+          <div className="row wrap">
+            <button className="btn primary" type="button" disabled={waiting || !server.enabled} onClick={() => props.connectMcp(server.id)}>{waiting ? "Connecting…" : server.status === "connected" ? "Reconnect" : "Connect"}</button>
+            {server.has_credentials && <button className="btn" type="button" disabled={waiting} onClick={() => props.logoutMcp(server.id)}>Log out</button>}
+            <button className="btn" type="button" disabled={waiting} onClick={() => props.toggleMcp(server.id, !server.enabled)}>{server.enabled ? "Disable" : "Enable"}</button>
+            <button className="btn danger" type="button" disabled={waiting} onClick={() => props.removeMcp(server.id)}>Remove</button>
+          </div>
+        </div>
+        <div className="path" style={{ marginTop: 8 }}>{server.url ?? [server.command, ...(server.args ?? [])].filter(Boolean).join(" ")}</div>
+        {probe?.error && <div className="error" style={{ marginTop: 8 }}>{probe.error}</div>}
+        {probe?.status === "connected" && <div style={{ marginTop: 10 }}>
+          <div className="small">Protocol {probe.protocol_version ?? "unknown"} · {probe.tools.length} tools · {probe.resources.length} resources</div>
+          {probe.tools.length > 0 && <details style={{ marginTop: 8 }}><summary className="small">Discovered tools</summary><ul className="context-list">{probe.tools.map((tool) => <li key={tool.name}><strong>{tool.name}</strong>{tool.read_only_hint === true ? " · read-only hint" : ""}{tool.description ? ` — ${tool.description}` : ""}</li>)}</ul></details>}
+          {probe.resources.length > 0 && <details style={{ marginTop: 8 }}><summary className="small">Resources</summary><ul className="context-list">{probe.resources.map((resource) => <li key={resource.uri}><strong>{resource.uri}</strong>{resource.description ? ` — ${resource.description}` : ""}</li>)}</ul></details>}
+        </div>}
+      </div>;
+    })}
+
+    <div className="notice" style={{ marginTop: 14 }}>
+      Tool execution is deliberately not yet exposed to the chat retrieval agent. This release establishes authenticated connectivity and capability discovery first; model-driven MCP tool calls will get a local per-server read-only allowlist in the next layer.
+    </div>
+    <div className="project-scroll-end" aria-hidden="true" />
+  </section>;
+}
 
 function ProjectPanel(props: {
   project: Project | null;

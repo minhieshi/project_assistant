@@ -1,3 +1,32 @@
+# v0.8.3
+
+## 0.8.3 — Guided implementation merged with memory and MCP
+
+- Merges the v0.8.0.03 guided-implementation branch into the memory/MCP line.
+- Replaces the active OpenCode implementation-brief workflow with **Guided implementation**.
+- Adds `--guided` to `project-assistant chat` and removes the active `handoff` command/API/UI path.
+- Larger implementation requests are decomposed into small steps and paused before code generation; confirmed steps re-read likely target files live.
+- GPT may author complete source/config/test code for human copy-paste, with repository/path/action metadata and no ellipsis/placeholders inside replacement units.
+- Adds response-level and fenced-code copy controls in the web UI.
+- Preserves the v0.8.0 incremental conversation consolidation and `user_memory.md` layer unchanged.
+- Preserves v0.8.2 remote Streamable HTTP OAuth/Keychain connectivity and local stdio MCP lifecycle/capability discovery.
+- Registered source roots remain read-only; Project Assistant still does not apply patches, run builds/tests or mutate Git state.
+
+# v0.8.2
+
+## 0.8.2 — Authenticated MCP connectivity
+
+- Adds the global MCP server registry at `~/.project-assistant/mcp-servers.json` with remote Streamable HTTP and local stdio server types.
+- Adds MCP Python SDK v2 as a runtime dependency.
+- Adds automatic OAuth discovery/browser authorization for remote MCPs, using a short-lived loopback callback listener and the SDK's PKCE/token-refresh flow.
+- Persists both OAuth token state and OAuth client-registration metadata through the existing macOS Keychain/private-file credential abstraction.
+- Adds real MCP capability discovery: negotiated protocol/server identity, tools, resources and resource templates.
+- Adds the Connections UI for adding remote MCP URLs, connecting/reconnecting, enabling/disabling, logging out and removing connections.
+- Adds `mcp-list`, `mcp-add`, `mcp-add-local`, `mcp-connect`, `mcp-tools`, `mcp-enable`, `mcp-disable`, `mcp-logout` and `mcp-remove` CLI commands.
+- Adds MCP API routes for remote/local registration, connection probing, enable/disable, logout and removal.
+- Keeps model-driven MCP tool execution disabled until a local per-server read-only allowlist/provenance layer is implemented; server `read_only_hint` annotations are displayed but not trusted as authorization.
+- Corrects the internal enterprise MCP name in documentation/examples to **CEB**.
+
 # v0.8.1
 
 ## 0.8.1 — MCP credential foundation on v0.8.0 memory
@@ -8,6 +37,8 @@
 - Stores access token, refresh token, expiry and client-registration metadata together as opaque JSON for OAuth refresh/re-authentication flows.
 - Adds an explicit private-file fallback (`PROJECT_ASSISTANT_MCP_AUTH_STORE=file`) for development/non-macOS use; the file is restricted to mode 0600.
 - Keeps credential lookup failures separate from project/retrieval state so future remote MCP connections can surface `authentication required` cleanly.
+- Adds `docs/USER_GUIDE.md` with the complete CLI/API reference, memory/consolidation file layout, environment settings, persistent-state map, troubleshooting and an explicit statement of the current MCP-connectivity boundary.
+- Expands `.env.example` to document all current retrieval, API, memory and MCP credential-store environment settings.
 
 # v0.8.0
 

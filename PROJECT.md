@@ -16,11 +16,11 @@ Restore the high-value parts of the enterprise ChatGPT browser experience locall
 - Controlled live read-only filesystem and Git inspection across registered roots.
 - GPT-5.6 inference through Portkey.
 - Pre-egress path/secret controls.
-- Structured OpenCode implementation-brief handoff for execution.
+- Guided implementation that authors complete source-grounded code/config/tests for human copy-paste.
 
 ## Decisions
 
-- Project Assistant owns project understanding; OpenCode owns code execution.
+- Project Assistant owns project understanding and code authoring; the human owns source writes, commands, tests and commits.
 - Registered source roots are read-only from the active Project Assistant API/UI/CLI.
 - Treat source code as first-class RAG material.
 - Preserve repo/branch/commit/path/symbol/line metadata on code chunks.
@@ -28,7 +28,7 @@ Restore the high-value parts of the enterprise ChatGPT browser experience locall
 - Use hybrid retrieval: exact + lexical + semantic + graph expansion + live reads.
 - Route across repos as a boost only; never suppress strong global matches.
 - Keep graph extraction deterministic rather than LLM-generated.
-- Persist conversations and generated OpenCode briefs in Markdown.
+- Persist conversations, implementation decisions and generated code responses in Markdown.
 - Browser JavaScript receives neither Portkey credentials nor the local FastAPI token.
 - Treat obvious secrets and sensitive credential files as non-egressable; local-only retrieval is allowed where appropriate.
 - Keep assistant state out of source Git repositories where practical.
@@ -38,7 +38,14 @@ Restore the high-value parts of the enterprise ChatGPT browser experience locall
 
 ## Current work
 
-v0.7.9 focuses Project Assistant on read-only project intelligence and high-quality OpenCode handoff. Retrieval/indexing/knowledge-graph work remains the core; source mutation is delegated to the coding agent.
+v0.8.3 combines guided human-applied implementation, consolidated conversation/user memory, and authenticated MCP connectivity. Retrieval/indexing/knowledge-graph work remains the core; source mutation remains outside Project Assistant.
+
+
+## v0.8.3 — Guided implementation, memory and MCP
+
+The active workflow no longer hands implementation work to OpenCode. Project Assistant may now author complete source/config/test code while all registered source roots remain read-only. Larger coding requests are split into small steps; the assistant pauses before coding, re-reads likely targets live for the confirmed step, emits complete copy-pasteable units with exact repo/path/action metadata, then stops for the human to apply and validate.
+
+This is merged with the v0.8.0 conversation-consolidation/user-memory layer and the v0.8.2 remote/local MCP connectivity layer. MCP authentication/discovery is available, while model-driven MCP tool execution remains gated pending a local read-only allowlist.
 
 ## Known issues
 

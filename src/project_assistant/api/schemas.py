@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 
@@ -36,12 +38,9 @@ class ConversationCreateRequest(BaseModel):
 
 class ChatRequest(BaseModel):
     message: str = Field(min_length=1, max_length=200_000)
+    mode: Literal["chat", "guided"] = "chat"
 
 
-
-
-class ImplementationBriefRequest(BaseModel):
-    focus: str = Field(default="", max_length=100_000)
 
 class ProposalRequest(BaseModel):
     request: str = Field(min_length=1, max_length=100_000)
@@ -63,3 +62,23 @@ class PlanApprovalRequest(BaseModel):
 
 class PatchApprovalRequest(BaseModel):
     approval_checks: list[str] = Field(default_factory=list, max_length=20)
+
+
+class MCPRemoteServerRequest(BaseModel):
+    id: str = Field(min_length=1, max_length=64)
+    name: str | None = Field(default=None, max_length=120)
+    url: str = Field(min_length=1, max_length=2000)
+    enabled: bool = True
+
+
+class MCPLocalServerRequest(BaseModel):
+    id: str = Field(min_length=1, max_length=64)
+    name: str | None = Field(default=None, max_length=120)
+    command: str = Field(min_length=1, max_length=1000)
+    args: list[str] = Field(default_factory=list, max_length=100)
+    cwd: str | None = Field(default=None, max_length=2000)
+    enabled: bool = True
+
+
+class MCPEnabledRequest(BaseModel):
+    enabled: bool
