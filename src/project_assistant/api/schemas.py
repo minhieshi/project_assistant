@@ -69,6 +69,7 @@ class MCPRemoteServerRequest(BaseModel):
     name: str | None = Field(default=None, max_length=120)
     url: str = Field(min_length=1, max_length=2000)
     enabled: bool = True
+    tls_compat: bool = False
 
 
 class MCPLocalServerRequest(BaseModel):

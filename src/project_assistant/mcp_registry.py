@@ -26,6 +26,7 @@ class MCPServerConfig:
     command: str | None = None
     args: list[str] = field(default_factory=list)
     cwd: str | None = None
+    tls_compat: bool = False
 
     def validate(self) -> "MCPServerConfig":
         if not _SERVER_ID.fullmatch(self.id):
@@ -50,6 +51,8 @@ class MCPServerConfig:
                 raise MCPConfigError("Remote MCP servers cannot define local command settings")
 
         if self.type == "local":
+            if self.tls_compat:
+                raise MCPConfigError("TLS compatibility mode applies only to remote MCP servers")
             if not self.command or not self.command.strip():
                 raise MCPConfigError("Local MCP servers require a command")
             if self.url:
@@ -71,6 +74,7 @@ class MCPServerConfig:
             command=str(raw["command"]) if raw.get("command") is not None else None,
             args=[str(item) for item in raw.get("args", [])],
             cwd=str(raw["cwd"]) if raw.get("cwd") is not None else None,
+            tls_compat=bool(raw.get("tls_compat", False)),
         ).validate()
 
     def to_dict(self) -> dict:
@@ -131,13 +135,14 @@ class MCPServerRegistry:
         self._save(servers)
         return server
 
-    def add_remote(self, server_id: str, url: str, *, name: str | None = None, enabled: bool = True) -> MCPServerConfig:
+    def add_remote(self, server_id: str, url: str, *, name: str | None = None, enabled: bool = True, tls_compat: bool = False) -> MCPServerConfig:
         return self.upsert(MCPServerConfig(
             id=server_id.strip(),
             name=(name or server_id).strip(),
             type="remote",
             url=url.strip(),
             enabled=enabled,
+            tls_compat=tls_compat,
         ))
 
     def add_local(

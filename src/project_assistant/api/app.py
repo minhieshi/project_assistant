@@ -116,7 +116,7 @@ async def _lifespan(app: FastAPI):
                 pass
 
 
-app = FastAPI(title="Local Project Assistant", version="0.8.3", lifespan=_lifespan)
+app = FastAPI(title="Local Project Assistant", version="0.8.5", lifespan=_lifespan)
 app.add_middleware(TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost", "testserver"])
 
 
@@ -134,7 +134,7 @@ async def local_api_auth(request: Request, call_next):
 
 @app.get("/health")
 def health() -> dict:
-    return {"status": "ok", "version": "0.8.3"}
+    return {"status": "ok", "version": "0.8.5"}
 
 
 @app.get("/api/status")
@@ -144,7 +144,7 @@ def status() -> dict:
 
     settings = PortkeySettings.from_env()
     return {
-        "version": "0.8.3",
+        "version": "0.8.5",
         "projects_root": str(registry.projects_root),
         "portkey": {
             "base_url": settings.base_url,
@@ -170,7 +170,7 @@ def list_mcp_servers() -> list[dict]:
 @app.post("/api/mcp/servers/remote")
 def add_remote_mcp(body: MCPRemoteServerRequest) -> dict:
     try:
-        MCP_REGISTRY.add_remote(body.id, body.url, name=body.name, enabled=body.enabled)
+        MCP_REGISTRY.add_remote(body.id, body.url, name=body.name, enabled=body.enabled, tls_compat=body.tls_compat)
         return next(item for item in MCP_MANAGER.configured() if item["id"] == body.id)
     except Exception as exc:
         raise _error(exc)

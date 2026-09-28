@@ -156,6 +156,7 @@ export type MCPServer = {
   command?: string | null;
   args?: string[];
   cwd?: string | null;
+  tls_compat?: boolean;
   status: "not_checked" | "connected" | "disabled" | "auth_required" | "error" | string;
   has_credentials?: boolean | null;
   last_probe?: MCPProbe | null;

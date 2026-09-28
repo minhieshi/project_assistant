@@ -1,15 +1,18 @@
 from __future__ import annotations
 
 import tempfile
+import ssl
+import sys
 import unittest
 import urllib.request
 from contextlib import asynccontextmanager
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from project_assistant.credentials import PrivateFileCredentialStore
 from project_assistant.mcp_client import MCPManager, MCPOAuthStorage, _OAuthCallbackServer
-from project_assistant.mcp_registry import MCPConfigError, MCPServerRegistry
+from project_assistant.mcp_registry import MCPConfigError, MCPServerConfig, MCPServerRegistry
 
 
 class MCPRegistryTests(unittest.TestCase):
@@ -43,6 +46,16 @@ class MCPRegistryTests(unittest.TestCase):
             registry.add_remote("ceb", "https://ceb.example.test/mcp")
             registry.set_enabled("ceb", False)
             self.assertFalse(MCPServerRegistry(path=registry.path).get("ceb").enabled)
+
+    def test_remote_tls_compat_persists_and_is_remote_only(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            registry = MCPServerRegistry(path=Path(tmp) / "mcp.json")
+            registry.add_remote("atlassian", "https://mcp.atlassian.com/v2/mcp", tls_compat=True)
+            self.assertTrue(MCPServerRegistry(path=registry.path).get("atlassian").tls_compat)
+            with self.assertRaises(MCPConfigError):
+                registry.upsert(MCPServerConfig(
+                    id="local", name="local", type="local", command="python", tls_compat=True
+                ))
 
 
 class MCPOAuthStorageTests(unittest.IsolatedAsyncioTestCase):
@@ -85,6 +98,25 @@ class OAuthCallbackServerTests(unittest.IsolatedAsyncioTestCase):
 
 
 class MCPManagerTests(unittest.IsolatedAsyncioTestCase):
+    async def test_tls_compat_clears_only_x509_strict_and_keeps_verification(self):
+        class FakeContext:
+            def __init__(self, protocol):
+                self.protocol = protocol
+                self.verify_flags = ssl.VERIFY_X509_STRICT | getattr(ssl, "VERIFY_X509_PARTIAL_CHAIN", 0)
+                self.verify_mode = ssl.CERT_NONE
+                self.check_hostname = False
+
+        fake_truststore = SimpleNamespace(SSLContext=FakeContext)
+        server = MCPServerConfig(
+            id="atlassian", name="Atlassian", type="remote",
+            url="https://mcp.atlassian.com/v2/mcp", tls_compat=True,
+        ).validate()
+        with patch.dict(sys.modules, {"truststore": fake_truststore}):
+            context = MCPManager._tls_verify_context(server)
+        self.assertEqual(context.verify_flags & ssl.VERIFY_X509_STRICT, 0)
+        self.assertEqual(context.verify_mode, ssl.CERT_REQUIRED)
+        self.assertTrue(context.check_hostname)
+
     async def test_probe_discovers_tools_resources_and_protocol(self):
         class FakeClient:
             protocol_version = "2026-07-28"

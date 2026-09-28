@@ -1,4 +1,4 @@
-# Local Project Assistant — v0.8.4
+# Local Project Assistant — v0.8.5
 
 Project Assistant recreates the useful parts of the enterprise ChatGPT browser experience locally while using approved Portkey routes for GPT-5.6 inference and embeddings. It keeps persistent project conversations, indexes multiple repositories, compiles high-signal project context, maintains consolidated user/project memory, and can produce source-grounded **copy-pasteable implementation code** without writing to registered source repositories itself.
 
@@ -21,7 +21,7 @@ Registered source repositories remain read-only to Project Assistant. It does no
 
 For installation, environment variables, project/source management, **guided implementation**, conversation consolidation and memory locations, MCP configuration/authentication, the complete CLI/API reference, persistent-state layout and troubleshooting, see **[`docs/USER_GUIDE.md`](docs/USER_GUIDE.md)**.
 
-## v0.8.4 — MCP diagnostics + guided implementation + memory
+## v0.8.5 — Corporate TLS compatibility + MCP diagnostics + guided implementation + memory
 
 v0.8.3 merges the three active feature strands into one build:
 
@@ -149,6 +149,11 @@ Example remote servers:
 
 ```bash
 project-assistant mcp-add atlassian https://mcp.atlassian.com/v2/mcp --name Atlassian
+project-assistant mcp-connect atlassian
+
+# If your managed corporate proxy certificate is rejected with
+# "Missing Authority Key Identifier":
+project-assistant mcp-add atlassian https://mcp.atlassian.com/v2/mcp --name Atlassian --tls-compat
 project-assistant mcp-connect atlassian
 
 project-assistant mcp-add ceb https://YOUR-INTERNAL-CEB-MCP/mcp --name CEB

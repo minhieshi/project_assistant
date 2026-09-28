@@ -29,6 +29,7 @@ def main() -> None:
     p_mcp_add.add_argument("url")
     p_mcp_add.add_argument("--name")
     p_mcp_add.add_argument("--disabled", action="store_true")
+    p_mcp_add.add_argument("--tls-compat", action="store_true", help="Allow trusted corporate CA chains that fail Python VERIFY_X509_STRICT; verification and hostname checks remain enabled")
 
     p_mcp_local = sub.add_parser("mcp-add-local", help="Add or update a local stdio MCP server")
     p_mcp_local.add_argument("server_id")
@@ -119,7 +120,7 @@ def main() -> None:
         mcp_registry = MCPServerRegistry()
         if args.command == "mcp-add":
             server = mcp_registry.add_remote(
-                args.server_id, args.url, name=args.name, enabled=not args.disabled
+                args.server_id, args.url, name=args.name, enabled=not args.disabled, tls_compat=args.tls_compat
             )
             print(json.dumps(server.to_dict(), indent=2))
             return

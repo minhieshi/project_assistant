@@ -48,6 +48,7 @@ export default function Home() {
   const [mcpId, setMcpId] = useState("");
   const [mcpName, setMcpName] = useState("");
   const [mcpUrl, setMcpUrl] = useState("");
+  const [mcpTlsCompat, setMcpTlsCompat] = useState(false);
   const [mcpBusy, setMcpBusy] = useState<string>("");
   const bottomRef = useRef<HTMLDivElement>(null);
 
@@ -288,8 +289,8 @@ export default function Home() {
     if (!mcpId.trim() || !mcpUrl.trim()) return;
     setMcpBusy("add"); setError("");
     try {
-      await api.addRemoteMcp(mcpId.trim(), mcpUrl.trim(), mcpName.trim() || undefined);
-      setMcpId(""); setMcpName(""); setMcpUrl("");
+      await api.addRemoteMcp(mcpId.trim(), mcpUrl.trim(), mcpName.trim() || undefined, mcpTlsCompat);
+      setMcpId(""); setMcpName(""); setMcpUrl(""); setMcpTlsCompat(false);
       await loadMcpServers();
     } catch (e) { setError(String(e)); } finally { setMcpBusy(""); }
   }
@@ -330,7 +331,7 @@ export default function Home() {
   return (
     <div className="app-shell">
       <aside className="sidebar">
-        <div className="brand">Project Assistant <span className="small">v0.8.3</span></div>
+        <div className="brand">Project Assistant <span className="small">v0.8.5</span></div>
         {appStatus && <div className="notice" style={{ marginBottom: 12 }}>Projects: {appStatus.projects_root}<br />Portkey: {appStatus.portkey.base_url_configured ? "URL configured" : "URL missing"}</div>}
 
         <div className="section-title">Projects</div>
@@ -419,9 +420,11 @@ export default function Home() {
             mcpId={mcpId}
             mcpName={mcpName}
             mcpUrl={mcpUrl}
+            mcpTlsCompat={mcpTlsCompat}
             setMcpId={setMcpId}
             setMcpName={setMcpName}
             setMcpUrl={setMcpUrl}
+            setMcpTlsCompat={setMcpTlsCompat}
             addRemoteMcp={addRemoteMcp}
             connectMcp={connectMcp}
             logoutMcp={logoutMcp}
@@ -559,9 +562,11 @@ function ConnectionsPanel(props: {
   mcpId: string;
   mcpName: string;
   mcpUrl: string;
+  mcpTlsCompat: boolean;
   setMcpId: (value: string) => void;
   setMcpName: (value: string) => void;
   setMcpUrl: (value: string) => void;
+  setMcpTlsCompat: (value: boolean) => void;
   addRemoteMcp: (event: FormEvent) => void;
   connectMcp: (id: string) => void;
   logoutMcp: (id: string) => void;
@@ -581,6 +586,7 @@ function ConnectionsPanel(props: {
         <input className="input" value={props.mcpId} onChange={(e) => props.setMcpId(e.target.value)} placeholder="id, e.g. atlassian or ceb" />
         <input className="input" value={props.mcpName} onChange={(e) => props.setMcpName(e.target.value)} placeholder="Optional display name" />
         <input className="input" value={props.mcpUrl} onChange={(e) => props.setMcpUrl(e.target.value)} placeholder="https://…/mcp" />
+        <label className="small" style={{ display: "flex", gap: 8, alignItems: "center" }}><input type="checkbox" checked={props.mcpTlsCompat} onChange={(e) => props.setMcpTlsCompat(e.target.checked)} /> Corporate TLS compatibility (keeps certificate + hostname verification; relaxes Python strict X.509 checks only)</label>
         <button className="btn primary" disabled={props.busy === "add" || !props.mcpId.trim() || !props.mcpUrl.trim()}>Add connection</button>
       </form>
       <div className="small" style={{ marginTop: 8 }}>Example Atlassian endpoint: https://mcp.atlassian.com/v2/mcp</div>
@@ -595,7 +601,7 @@ function ConnectionsPanel(props: {
         <div className="row wrap" style={{ justifyContent: "space-between" }}>
           <div>
             <h3>{server.name}</h3>
-            <div className="small">{server.id} · {server.type} · <strong>{server.status}</strong>{server.has_credentials === true ? " · OAuth stored" : ""}</div>
+            <div className="small">{server.id} · {server.type} · <strong>{server.status}</strong>{server.tls_compat ? " · corporate TLS compat" : ""}{server.has_credentials === true ? " · OAuth stored" : ""}</div>
           </div>
           <div className="row wrap">
             <button className="btn primary" type="button" disabled={waiting || !server.enabled} onClick={() => props.connectMcp(server.id)}>{waiting ? "Connecting…" : server.status === "connected" ? "Reconnect" : "Connect"}</button>

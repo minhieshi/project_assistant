@@ -1,3 +1,12 @@
+# v0.8.5
+
+## 0.8.5 — Corporate TLS compatibility for MCP
+
+- Adds per-server `tls_compat` for managed enterprise TLS interception chains rejected by Python 3.13+ `VERIFY_X509_STRICT`, including `Missing Authority Key Identifier`.
+- Compatibility mode uses the operating-system trust store and keeps `CERT_REQUIRED` plus hostname verification; it does **not** use `verify=False`.
+- Adds `project-assistant mcp-add ... --tls-compat` and a matching Connections UI checkbox.
+- Improves the MCP diagnostic message to recommend compatibility mode only for this specific strict-X.509 failure.
+
 # v0.8.4
 
 ## 0.8.4 — MCP connection diagnostics and transport hardening

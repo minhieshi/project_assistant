@@ -283,6 +283,35 @@ class MCPManager:
                 "MCP connectivity requires the MCP Python SDK v2. Reinstall Project Assistant so the 'mcp>=2,<3' dependency is installed."
             ) from exc
 
+
+    @staticmethod
+    def _tls_verify_context(server: MCPServerConfig):
+        """Return the TLS verification setting for a remote MCP server.
+
+        ``tls_compat`` is intended for managed enterprise TLS interception chains
+        that are trusted by macOS but fail Python 3.13+ ``VERIFY_X509_STRICT``
+        checks (for example, a CA certificate missing Authority Key Identifier).
+        It does *not* disable certificate or hostname verification.
+        """
+        if not server.tls_compat:
+            return True
+
+        import ssl
+        try:
+            import truststore
+        except ModuleNotFoundError as exc:  # httpx2 normally provides this dependency
+            raise MCPDependencyError(
+                "Corporate TLS compatibility requires the 'truststore' package used by httpx2"
+            ) from exc
+
+        context = truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        strict_flag = getattr(ssl, "VERIFY_X509_STRICT", None)
+        if strict_flag is not None:
+            context.verify_flags &= ~strict_flag
+        context.verify_mode = ssl.CERT_REQUIRED
+        context.check_hostname = True
+        return context
+
     @asynccontextmanager
     async def _client_context(self, server: MCPServerConfig) -> AsyncIterator[Any]:
         self._sdk_available()
@@ -353,7 +382,8 @@ class MCPManager:
                 # surface as a confusing AnyIO TaskGroup failure. Match the MCP
                 # SDK's recommended transport timeouts when bringing our own client.
                 timeout = httpx2.Timeout(30.0, read=300.0)
-                async with httpx2.AsyncClient(auth=oauth, timeout=timeout) as http_client:
+                verify = self._tls_verify_context(server)
+                async with httpx2.AsyncClient(auth=oauth, timeout=timeout, verify=verify) as http_client:
                     transport = streamable_http_client(server.url or "", http_client=http_client)
                     async with Client(transport) as client:
                         yield client
@@ -405,7 +435,14 @@ class MCPManager:
 
         if not parts:
             parts = [f"{type(exc).__name__}: {str(exc).replace(chr(10), ' ')}"]
-        return " | ".join(parts)[:1400]
+        message = " | ".join(parts)[:1400]
+        if "Missing Authority Key Identifier" in message:
+            message += (
+                " | This certificate chain is trusted but rejected by Python 3.13+ strict X.509 validation. "
+                "For a managed corporate TLS proxy, update this MCP server with --tls-compat; "
+                "certificate and hostname verification will remain enabled."
+            )
+        return message[:1800]
 
     @staticmethod
     def _model_value(value: Any) -> Any:

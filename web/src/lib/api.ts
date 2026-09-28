@@ -31,7 +31,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 export const api = {
   mcpServers: () => request<MCPServer[]>("/mcp/servers"),
-  addRemoteMcp: (id: string, url: string, name?: string) => request<MCPServer>("/mcp/servers/remote", { method: "POST", body: JSON.stringify({ id, url, name: name || null, enabled: true }) }),
+  addRemoteMcp: (id: string, url: string, name?: string, tlsCompat = false) => request<MCPServer>("/mcp/servers/remote", { method: "POST", body: JSON.stringify({ id, url, name: name || null, enabled: true, tls_compat: tlsCompat }) }),
   setMcpEnabled: (id: string, enabled: boolean) => request<MCPServer>(`/mcp/servers/${encodeURIComponent(id)}/enabled`, { method: "POST", body: JSON.stringify({ enabled }) }),
   connectMcp: (id: string) => request<MCPProbe>(`/mcp/servers/${encodeURIComponent(id)}/connect`, { method: "POST" }),
   logoutMcp: (id: string) => request<{ ok: boolean }>(`/mcp/servers/${encodeURIComponent(id)}/logout`, { method: "POST" }),

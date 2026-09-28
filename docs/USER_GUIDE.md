@@ -1401,3 +1401,16 @@ The separation is deliberate: successful authentication to Atlassian or CEB does
 ## MCP connection troubleshooting
 
 v0.8.4 flattens nested TaskGroup errors. For Atlassian use `https://mcp.atlassian.com/v2/mcp`, log out, then reconnect.
+
+
+## Corporate TLS compatibility for remote MCPs
+
+Python 3.13+ enables `VERIFY_X509_STRICT` by default. Some managed enterprise TLS interception certificates are trusted by macOS but are older/non-conforming enough to fail with errors such as `Missing Authority Key Identifier`. For those servers only, re-add/update the MCP with:
+
+```bash
+project-assistant mcp-add atlassian https://mcp.atlassian.com/v2/mcp --name Atlassian --tls-compat
+project-assistant mcp-logout atlassian
+project-assistant mcp-connect atlassian
+```
+
+The Connections screen exposes the same **Corporate TLS compatibility** option. This mode still requires a trusted certificate and valid hostname. It only removes Python's `VERIFY_X509_STRICT` flag; it never sets `verify=False`. Prefer having the corporate PKI issue RFC 5280-compliant certificates when that is practical.
