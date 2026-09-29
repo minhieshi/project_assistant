@@ -1,4 +1,4 @@
-# Local Project Assistant — v0.8.9
+# Local Project Assistant — v0.8.12
 
 Project Assistant recreates the useful parts of the enterprise ChatGPT browser experience locally while using approved Portkey routes for GPT-5.6 inference and embeddings. It keeps persistent project conversations, indexes multiple repositories, compiles high-signal project context, maintains consolidated user/project memory, and can produce source-grounded **copy-pasteable implementation code** without writing to registered source repositories itself.
 
@@ -20,6 +20,22 @@ Registered source repositories remain read-only to Project Assistant. It does no
 ## User guide
 
 For installation, environment variables, project/source management, **guided implementation**, conversation consolidation and memory locations, MCP configuration/authentication, the complete CLI/API reference, persistent-state layout and troubleshooting, see **[`docs/USER_GUIDE.md`](docs/USER_GUIDE.md)**.
+
+## v0.8.12 — Fast final render + conversation navigation polish
+
+v0.8.12 removes two long-conversation latency traps from the chat UI. The final streamed assistant entry is now delivered in the SSE `done` frame and rendered directly, rather than refetching and reparsing the entire Markdown conversation. Post-response conversation indexing is also moved to a single background worker after the durable Markdown write, so embedding/index maintenance no longer holds the UI in its raw streaming state.
+
+Conversation navigation is also polished in v0.8.12: selecting a conversation jumps directly to its latest message, and user prompts use a distinct blue-toned, right-aligned bubble so prompt/assistant boundaries are easy to scan in long chats.
+
+Historical message components are content-memoised, while the existing off-screen `content-visibility` optimisation remains in place, reducing later reload/layout work for large conversations. Conversation concurrency and the scoped Approve button from v0.8.10 remain unchanged.
+
+## v0.8.10 — Concurrent conversations + scoped approval
+
+v0.8.10 lets separate conversations run at the same time without sharing one global browser `busy`/stream buffer. Each conversation keeps independent streaming text, retrieval context and errors, while the backend enforces one active response per individual conversation so Markdown turns cannot interleave.
+
+The composer also adds an **Approve** button. It sends an auditable approval turn for the latest assistant-proposed action and is deliberately scoped to that proposal only; it is not permanent permission and does not change the read-only source/MCP safety boundaries.
+
+No reindex is required for this release.
 
 ## v0.8.9 — Conversation recovery and streaming resilience
 

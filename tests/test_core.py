@@ -444,7 +444,7 @@ class WebFoundationTests(unittest.TestCase):
     def test_api_app_imports_without_initialising_rag(self):
         from project_assistant.api.app import app
 
-        self.assertEqual(app.version, "0.8.9")
+        self.assertEqual(app.version, "0.8.12")
 
     def test_portkey_url_is_explicit_and_does_not_default_public(self):
         from project_assistant.config import PortkeySettings
@@ -1520,3 +1520,87 @@ class MCPRetrievalAgentTests(unittest.TestCase):
         self.assertEqual(len(actions), 1)
         self.assertEqual(actions[0].server, "atlassian")
         self.assertEqual(actions[0].target, "discover")
+
+
+class ConversationConcurrencyTests(unittest.TestCase):
+    def test_same_conversation_cannot_acquire_two_runs(self):
+        from project_assistant.concurrency import ConversationRunCoordinator
+
+        runs = ConversationRunCoordinator()
+        first = runs.try_acquire("p1", "c1")
+        self.assertIsNotNone(first)
+        self.assertTrue(runs.is_running("p1", "c1"))
+        self.assertIsNone(runs.try_acquire("p1", "c1"))
+        assert first is not None
+        first.release()
+        self.assertFalse(runs.is_running("p1", "c1"))
+        second = runs.try_acquire("p1", "c1")
+        self.assertIsNotNone(second)
+        assert second is not None
+        second.release()
+
+    def test_different_conversations_can_run_at_the_same_time(self):
+        from project_assistant.concurrency import ConversationRunCoordinator
+
+        runs = ConversationRunCoordinator()
+        one = runs.try_acquire("p1", "c1")
+        two = runs.try_acquire("p1", "c2")
+        other_project = runs.try_acquire("p2", "c1")
+        self.assertIsNotNone(one)
+        self.assertIsNotNone(two)
+        self.assertIsNotNone(other_project)
+        assert one is not None and two is not None and other_project is not None
+        one.release()
+        two.release()
+        other_project.release()
+
+
+def test_conversation_append_entry_returns_exact_persisted_entry():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        store = ConversationStore(root / "conversations")
+        conversation = store.create("Render fast")
+        path, entry = store.append_entry(conversation.id, "assistant", "**done**\n")
+        assert path == conversation.path
+        assert entry.role == "assistant"
+        assert entry.title == "Assistant"
+        assert entry.body == "**done**"
+        persisted = store.entries(conversation.id)[-1]
+        assert persisted == entry
+
+
+def test_post_response_index_can_be_scheduled_without_blocking_caller():
+    import sys
+    import types
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event, Lock
+    fake_chroma = types.ModuleType("langchain_chroma")
+    fake_chroma.Chroma = object
+    fake_docs = types.ModuleType("langchain_core.documents")
+    fake_docs.Document = object
+    with patch.dict(sys.modules, {"langchain_chroma": fake_chroma, "langchain_core.documents": fake_docs}):
+        from project_assistant.assistant import ProjectAssistant
+
+    started = Event()
+    release = Event()
+
+    class SlowIndexer:
+        def index_specific_file(self, _path):
+            started.set()
+            release.wait(timeout=2)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        assistant = object.__new__(ProjectAssistant)
+        assistant.project_dir = Path(tmp)
+        assistant.indexer = SlowIndexer()
+        assistant._index_lock = Lock()
+        assistant._index_executor = ThreadPoolExecutor(max_workers=1)
+        try:
+            assistant._schedule_index(Path(tmp) / "conversation.md")
+            assert started.wait(timeout=1)
+            # If _schedule_index were synchronous, execution would still be blocked
+            # inside SlowIndexer and this assertion could never be reached.
+            assert not release.is_set()
+        finally:
+            release.set()
+            assistant._index_executor.shutdown(wait=True)

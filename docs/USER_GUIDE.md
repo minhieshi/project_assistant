@@ -1,6 +1,6 @@
-# Project Assistant v0.8.7 — User Guide
+# Project Assistant v0.8.12 — User Guide
 
-This guide describes the behaviour that is actually implemented in **v0.8.9**. It covers setup, projects and source repositories, indexing and retrieval, conversation persistence and consolidation, local state, MCP credential storage, the CLI, the local API, and troubleshooting.
+This guide describes the behaviour that is actually implemented in **v0.8.12**. It covers setup, projects and source repositories, indexing and retrieval, conversation persistence and consolidation, local state, MCP credential storage, the CLI, the local API, and troubleshooting.
 
 > **MCP status:** v0.8.8 connects authenticated MCP servers to the normal retrieval planner through an explicit local per-server tool allowlist. Only tools you approve in the Connections tab or with `mcp-allow` are exposed to chat retrieval. MCP tool descriptions, schemas and results are treated as untrusted external evidence, and obvious mutation-oriented tool names are blocked locally even if the server labels them read-only.
 
@@ -354,6 +354,16 @@ Replacement code should be a complete copy-pasteable unit. Guided mode explicitl
 
 The UI has **Copy response** on assistant/event messages and a **Copy** button on fenced code blocks.
 
+### Approve button
+
+The chat composer also has an **Approve** button. It is enabled only when the latest conversational turn is from the assistant and no response is already running in that conversation. Pressing it records a normal user turn equivalent to:
+
+```text
+Approved — proceed with the latest action or step you proposed.
+```
+
+Approval is intentionally narrow: it applies only to the latest assistant-proposed action in that conversation. It does not grant permanent permissions, expand MCP allowlists, allow writes, approve destructive operations, or authorise unrelated future work. If there is no pending proposed action, the assistant is instructed not to invent one.
+
 CLI example:
 
 ```bash
@@ -390,6 +400,28 @@ Why did this job fail?
 Guided implementation plans, confirmations, generated code and ordinary chat turns remain in the same conversation Markdown, so the project history stays readable without a database viewer.
 
 Conversation files use private file permissions.
+
+### Concurrent conversations
+
+v0.8.12 allows different conversations to run concurrently. You can start a response in one conversation, switch to another conversation, and send another request while the first response continues. Running conversations are marked **Running…** in the sidebar, and each conversation keeps its own stream text/error/context state.
+
+When you select a conversation in the sidebar, the chat view jumps to the latest message as soon as that conversation has loaded. User prompts are visually distinct from assistant output with a blue-toned, right-aligned bubble, making the most recent prompt/response boundary easier to find in long conversations.
+
+
+### Fast final rendering
+
+During generation, assistant output is intentionally shown as lightweight raw text so token streaming stays responsive. When generation completes, the backend now sends the exact persisted assistant entry in the SSE `done` frame and the browser renders only that new Markdown message. It no longer reloads and reparses the complete conversation after every response. Conversation embedding/index maintenance runs after the durable Markdown write on a background worker, so indexing latency does not delay the Markdown transition.
+
+
+Concurrency is deliberately per conversation:
+
+- different conversations may retrieve and call the model at the same time;
+- the same conversation may have only one active response, preventing interleaved Markdown turns;
+- a duplicate request to an already-running conversation receives HTTP `409`;
+- shared conversation indexing/manifest writes are serialised after responses complete;
+- switching conversations/projects does not let a background completion overwrite the currently visible conversation.
+
+This is conversation concurrency, not unrestricted project mutation concurrency. Source repositories remain read-only.
 
 ## 9. Conversation consolidation and user memory
 
@@ -1185,6 +1217,7 @@ GET    /api/projects/{project_id}/conversations
 POST   /api/projects/{project_id}/conversations
 GET    /api/projects/{project_id}/conversations/{conversation_id}
 POST   /api/projects/{project_id}/conversations/{conversation_id}/stream
+       # one active stream per conversation; returns 409 if that conversation is already running
 ```
 
 The stream request body is:
@@ -1265,7 +1298,7 @@ For an **imported** code repository, the prompt/project-memory paths default to:
 
 `.assistant/` is added to `.git/info/exclude` when the project directory is already a Git repository. This keeps local assistant state out of normal Git status without modifying the repository's tracked `.gitignore`.
 
-Historical `.assistant/proposals/` and `.assistant/patches/` directories and `change_gate.py` compatibility code can exist from earlier versions. They are not wired into the normal v0.8.7 API/UI/CLI mutation path.
+Historical `.assistant/proposals/` and `.assistant/patches/` directories and `change_gate.py` compatibility code can exist from earlier versions. They are not wired into the normal v0.8.12 API/UI/CLI mutation path.
 
 ## 14. Project configuration (`.assistant/project.json`)
 
@@ -1461,7 +1494,7 @@ cd web
 npm run build
 ```
 
-## 18. Current v0.8.7 limitations / next layer
+## 18. Current v0.8.12 limitations / next layer
 
 Authenticated **tool-based** MCP retrieval is implemented. The remaining MCP work is narrower:
 
@@ -1476,7 +1509,6 @@ MCP connectivity + retrieval (implemented)
   └── SearchHit normalisation + provenance/output/egress controls
 
 remaining
-  ├── read-only Zowe MCP server exposing approved Zowe functions (implemented)
   └── richer first-class MCP resource/template retrieval where useful
 ```
 

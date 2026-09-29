@@ -21,6 +21,38 @@ function timeLabel(value?: string | null) {
   return Number.isNaN(date.valueOf()) ? value : date.toLocaleString("en-AU", { dateStyle: "medium", timeStyle: "short" });
 }
 
+type ConversationRunState = {
+  busy: boolean;
+  text: string;
+  error?: string;
+  context?: ContextSummary;
+};
+
+function sameConversationEntry(left?: ConversationEntry, right?: ConversationEntry) {
+  return Boolean(
+    left && right &&
+    left.role === right.role &&
+    left.title === right.title &&
+    left.timestamp === right.timestamp &&
+    left.body === right.body
+  );
+}
+
+function reconcileConversationDetail(current: ConversationDetail | null, next: ConversationDetail) {
+  if (!current || current.id !== next.id) return next;
+  const entries = next.entries.map((entry, index) =>
+    sameConversationEntry(current.entries[index], entry) ? current.entries[index] : entry
+  );
+  return { ...next, entries };
+}
+
+function appendCompletedEntry(current: ConversationDetail | null, conversationId: string, entry: ConversationEntry) {
+  if (!current || current.id !== conversationId) return current;
+  const last = current.entries[current.entries.length - 1];
+  if (sameConversationEntry(last, entry)) return current;
+  return { ...current, entries: [...current.entries, entry] };
+}
+
 export default function Home() {
   const [projects, setProjects] = useState<Project[]>([]);
   const [appStatus, setAppStatus] = useState<AppStatus | null>(null);
@@ -31,7 +63,8 @@ export default function Home() {
   const [conversation, setConversation] = useState<ConversationDetail | null>(null);
   const [context, setContext] = useState<ContextSummary | null>(null);
   const [tab, setTab] = useState<"chat" | "project" | "connections">("chat");
-  const [streamingText, setStreamingText] = useState("");
+  const [conversationRuns, setConversationRuns] = useState<Record<string, ConversationRunState>>({});
+  const [conversationModes, setConversationModes] = useState<Record<string, "chat" | "guided">>({});
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [importPath, setImportPath] = useState("");
@@ -51,6 +84,16 @@ export default function Home() {
   const [mcpTlsCompat, setMcpTlsCompat] = useState(false);
   const [mcpBusy, setMcpBusy] = useState<string>("");
   const bottomRef = useRef<HTMLDivElement>(null);
+  const lastAutoScrolledConversationRef = useRef("");
+  const selectedProjectRef = useRef("");
+  const selectedConversationRef = useRef("");
+  selectedProjectRef.current = projectId;
+  selectedConversationRef.current = conversationId;
+
+  const currentRun = conversationRuns[conversationId];
+  const currentConversationBusy = currentRun?.busy ?? false;
+  const currentStreamingText = currentRun?.text ?? "";
+  const currentMode = conversationModes[conversationId] ?? "chat";
 
   const currentProject = useMemo(() => projects.find((project) => project.id === projectId) ?? null, [projects, projectId]);
 
@@ -62,21 +105,28 @@ export default function Home() {
 
   const loadConversations = useCallback(async (pid: string) => {
     const next = await api.conversations(pid);
+    if (selectedProjectRef.current !== pid) return next;
     setConversations(next);
     setConversationId((current) => (current && next.some((item) => item.id === current) ? current : next[0]?.id || ""));
+    return next;
   }, []);
 
   const loadConversation = useCallback(async (pid: string, cid: string) => {
     try {
-      setConversation(await api.conversation(pid, cid));
+      const detail = await api.conversation(pid, cid);
+      if (selectedProjectRef.current === pid && selectedConversationRef.current === cid) {
+        setConversation((current) => reconcileConversationDetail(current, detail));
+      }
+      return detail;
     } catch (e) {
       const message = String(e);
       if (!message.includes("404")) throw e;
 
       // A conversation file may have been removed/corrupted outside the UI or a
-      // previous write may have failed. Refresh the authoritative list and move
-      // away from the dead ID instead of retrying it forever after restart.
+      // previous write may have failed. Only change the visible selection if the
+      // missing conversation is still the one the user is looking at.
       const next = await api.conversations(pid);
+      if (selectedProjectRef.current !== pid || selectedConversationRef.current !== cid) return null;
       setConversations(next);
       const fallback = next.find((item) => item.id !== cid)?.id ?? "";
       setConversation(null);
@@ -86,6 +136,7 @@ export default function Home() {
           ? `Conversation ${cid} could not be loaded. Switched to the most recent available conversation.`
           : `Conversation ${cid} could not be loaded. Create a new conversation to continue.`
       );
+      return null;
     }
   }, []);
 
@@ -118,7 +169,6 @@ export default function Home() {
   }, [projectId, loadConversations, loadIndexStatus, projects]);
 
   useEffect(() => {
-    setStreamingText("");
     if (!projectId || !conversationId) {
       setConversation(null);
       return;
@@ -127,16 +177,26 @@ export default function Home() {
   }, [projectId, conversationId, loadConversation]);
 
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
-  }, [conversation?.entries.length]);
+    setContext(conversationRuns[conversationId]?.context ?? null);
+  }, [conversationId]);
 
   useEffect(() => {
-    if (!streamingText) return;
+    if (!conversationId || !conversation || conversation.id !== conversationId) return;
+    const switchedConversation = lastAutoScrolledConversationRef.current !== conversationId;
+    lastAutoScrolledConversationRef.current = conversationId;
+    const frame = window.requestAnimationFrame(() => {
+      bottomRef.current?.scrollIntoView({ behavior: switchedConversation ? "auto" : "smooth", block: "end" });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [conversationId, conversation?.id, conversation?.entries.length]);
+
+  useEffect(() => {
+    if (!currentStreamingText) return;
     const frame = window.requestAnimationFrame(() => {
       bottomRef.current?.scrollIntoView({ behavior: "auto", block: "end" });
     });
     return () => window.cancelAnimationFrame(frame);
-  }, [streamingText]);
+  }, [currentStreamingText]);
 
   async function createProject(event: FormEvent) {
     event.preventDefault();
@@ -178,41 +238,93 @@ export default function Home() {
 
   const send = useCallback(async (textValue: string, sendMode: "chat" | "guided") => {
     const text = textValue.trim();
-    if (!projectId || !conversationId || busy || !text) return;
-    setBusy(true); setError(""); setStreamingText("");
+    const pid = projectId;
+    const cid = conversationId;
+    if (!pid || !cid || conversationRuns[cid]?.busy || !text) return;
+
+    setError("");
+    setConversationModes((current) => ({ ...current, [cid]: sendMode }));
+    setConversationRuns((current) => ({ ...current, [cid]: { busy: true, text: "", error: undefined, context: current[cid]?.context } }));
 
     let pendingDelta = "";
+    let completedEntry: ConversationEntry | undefined;
     let flushTimer: number | null = null;
     const flushStreaming = () => {
       flushTimer = null;
       if (!pendingDelta) return;
       const chunk = pendingDelta;
       pendingDelta = "";
-      setStreamingText((current) => current + chunk);
+      setConversationRuns((current) => ({
+        ...current,
+        [cid]: { ...(current[cid] ?? { busy: true, text: "" }), text: (current[cid]?.text ?? "") + chunk },
+      }));
     };
 
     try {
       const optimistic: ConversationEntry = { title: "User", timestamp: new Date().toISOString(), body: text, role: "user" };
-      setConversation((current) => current ? { ...current, entries: [...current.entries, optimistic] } : current);
-      await streamChat(projectId, conversationId, text, sendMode, {
-        onContext: (value) => setContext(value),
+      if (selectedProjectRef.current === pid && selectedConversationRef.current === cid) {
+        setConversation((current) => current ? { ...current, entries: [...current.entries, optimistic] } : current);
+      }
+      await streamChat(pid, cid, text, sendMode, {
+        onContext: (value) => {
+          setConversationRuns((current) => ({
+            ...current,
+            [cid]: { ...(current[cid] ?? { busy: true, text: "" }), context: value },
+          }));
+          if (selectedProjectRef.current === pid && selectedConversationRef.current === cid) setContext(value);
+        },
         onDelta: (delta) => {
           pendingDelta += delta;
           if (flushTimer === null) flushTimer = window.setTimeout(flushStreaming, 50);
         },
+        onDone: (entry) => {
+          completedEntry = entry;
+        },
       });
       if (flushTimer !== null) window.clearTimeout(flushTimer);
       flushStreaming();
-      await loadConversation(projectId, conversationId);
-      setStreamingText("");
-      await loadConversations(projectId);
+
+      // The final SSE frame contains the exact assistant entry that was persisted
+      // by the backend. Render only that new Markdown message instead of immediately
+      // refetching/reparsing the entire conversation history.
+      if (completedEntry && selectedProjectRef.current === pid && selectedConversationRef.current === cid) {
+        setConversation((current) => appendCompletedEntry(current, cid, completedEntry!));
+      }
+      setConversationRuns((current) => ({
+        ...current,
+        [cid]: { ...(current[cid] ?? { busy: false, text: "" }), busy: false, text: "", error: undefined },
+      }));
+
+      // Conversation summaries are cheap and keep ordering/updated timestamps fresh.
+      // Fall back to a detail reload only for older/malformed streams that did not
+      // supply the persisted assistant entry.
+      if (!completedEntry && selectedProjectRef.current === pid && selectedConversationRef.current === cid) {
+        await loadConversation(pid, cid);
+      }
+      await loadConversations(pid);
     } catch (e) {
       if (flushTimer !== null) window.clearTimeout(flushTimer);
       flushStreaming();
-      setError(String(e));
-      await loadConversation(projectId, conversationId).catch(() => undefined);
-    } finally { setBusy(false); }
-  }, [busy, conversationId, loadConversation, loadConversations, projectId]);
+      const message = String(e);
+      setConversationRuns((current) => ({
+        ...current,
+        [cid]: { ...(current[cid] ?? { busy: false, text: "" }), busy: false, error: message },
+      }));
+      if (selectedProjectRef.current === pid && selectedConversationRef.current === cid) setError(message);
+      await loadConversation(pid, cid).catch(() => undefined);
+    }
+  }, [conversationId, conversationRuns, loadConversation, loadConversations, projectId]);
+
+  const approveLatest = useCallback(async () => {
+    if (!conversation || !conversationId || currentConversationBusy) return;
+    const latest = [...conversation.entries].reverse().find((entry) => entry.role === "assistant" || entry.role === "user");
+    if (!latest || latest.role !== "assistant") return;
+    await send(
+      "Approved — proceed with the latest action or step you proposed. Keep this approval scoped only to that latest proposal; do not broaden it to unrelated actions.",
+      currentMode,
+    );
+  }, [conversation, conversationId, currentConversationBusy, currentMode, send]);
+
 
 
   async function addSource(event: FormEvent) {
@@ -359,7 +471,7 @@ export default function Home() {
   return (
     <div className="app-shell">
       <aside className="sidebar">
-        <div className="brand">Project Assistant <span className="small">v0.8.7</span></div>
+        <div className="brand">Project Assistant <span className="small">v0.8.12</span></div>
         {appStatus && <div className="notice" style={{ marginBottom: 12 }}>Projects: {appStatus.projects_root}<br />Portkey: {appStatus.portkey.base_url_configured ? "URL configured" : "URL missing"}</div>}
 
         <div className="section-title">Projects</div>
@@ -386,8 +498,8 @@ export default function Home() {
         {projectId && <>
           <div className="section-title">Conversations</div>
           {conversations.map((item) => (
-            <button key={item.id} className={`nav-item ${item.id === conversationId ? "active" : ""}`} onClick={() => { setConversationId(item.id); setTab("chat"); }} title={timeLabel(item.updated_at)}>
-              {item.title}
+            <button key={item.id} className={`nav-item ${item.id === conversationId ? "active" : ""} ${conversationRuns[item.id]?.busy ? "running" : ""}`} onClick={() => { setConversationId(item.id); setTab("chat"); }} title={timeLabel(item.updated_at)}>
+              {item.title}{conversationRuns[item.id]?.busy ? " · Running…" : ""}
             </button>
           ))}
           <form className="form-stack" onSubmit={createConversation} style={{ marginTop: 10 }}>
@@ -413,11 +525,19 @@ export default function Home() {
             <section className="chat-scroll">
               {!conversation ? <div className="empty">{projectId ? "Create or select a conversation." : "Register a local project to begin."}</div> : <>
                 {conversation.entries.map((entry, index) => <Message key={`${entry.timestamp}-${index}`} entry={entry} />)}
-                {streamingText && <StreamingMessage text={streamingText} />}
+                {currentStreamingText && <StreamingMessage text={currentStreamingText} />}
+                {currentRun?.error && <div className="error" style={{ marginBottom: 16 }}>{currentRun.error}</div>}
                 <div ref={bottomRef} />
               </>}
             </section>
-            {conversation && <Composer busy={busy} onSend={send} />}
+            {conversation && <Composer
+              busy={currentConversationBusy}
+              mode={currentMode}
+              setMode={(mode) => setConversationModes((current) => ({ ...current, [conversationId]: mode }))}
+              canApprove={([...conversation.entries].reverse().find((entry) => entry.role === "assistant" || entry.role === "user")?.role === "assistant") && !currentConversationBusy}
+              onApprove={approveLatest}
+              onSend={send}
+            />}
           </>
         ) : tab === "project" ? (
           <ProjectPanel
@@ -503,16 +623,13 @@ const Message = memo(function Message({ entry }: { entry: ConversationEntry }) {
     {markdown ? (
       <div className="message-body markdown">
         <ReactMarkdown
-          remarkPlugins={[remarkGfm]}
-          components={{
-            a: ({ href, children }) => <a href={href} target="_blank" rel="noreferrer">{children}</a>,
-            pre: MarkdownPre,
-          }}
+          remarkPlugins={MARKDOWN_REMARK_PLUGINS}
+          components={MARKDOWN_COMPONENTS}
         >{entry.body}</ReactMarkdown>
       </div>
     ) : <div className="message-body">{entry.body}</div>}
   </div>;
-});
+}, (previous, next) => sameConversationEntry(previous.entry, next.entry));
 
 function markdownText(node: ReactNode): string {
   if (typeof node === "string" || typeof node === "number") return String(node);
@@ -543,6 +660,12 @@ function MarkdownPre({ children, ...props }: ComponentPropsWithoutRef<"pre">) {
   </div>;
 }
 
+const MARKDOWN_REMARK_PLUGINS = [remarkGfm];
+const MARKDOWN_COMPONENTS = {
+  a: ({ href, children }: ComponentPropsWithoutRef<"a">) => <a href={href} target="_blank" rel="noreferrer">{children}</a>,
+  pre: MarkdownPre,
+};
+
 function StreamingMessage({ text }: { text: string }) {
   return <div className="message assistant streaming-message">
     <div className="message-label">Assistant · responding</div>
@@ -550,9 +673,15 @@ function StreamingMessage({ text }: { text: string }) {
   </div>;
 }
 
-const Composer = memo(function Composer({ busy, onSend }: { busy: boolean; onSend: (text: string, mode: "chat" | "guided") => Promise<void> }) {
+const Composer = memo(function Composer({ busy, mode, setMode, canApprove, onApprove, onSend }: {
+  busy: boolean;
+  mode: "chat" | "guided";
+  setMode: (mode: "chat" | "guided") => void;
+  canApprove: boolean;
+  onApprove: () => Promise<void>;
+  onSend: (text: string, mode: "chat" | "guided") => Promise<void>;
+}) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const [mode, setMode] = useState<"chat" | "guided">("chat");
 
   function submit() {
     const textarea = textareaRef.current;
@@ -579,8 +708,11 @@ const Composer = memo(function Composer({ busy, onSend }: { busy: boolean; onSen
             <button type="button" className={mode === "guided" ? "active" : ""} onClick={() => setMode("guided")}>Guided implementation</button>
           </div>
         </div>
-        <button type="button" className="btn primary" onClick={submit} disabled={busy}>{busy ? "Working…" : "Send"}</button>
-        <span className="small">Read-only source access. Guided mode can author complete copy-pasteable code; you remain the write/commit boundary. macOS Dictation works in this box.</span>
+        <div className="row wrap">
+          <button type="button" className="btn approve" onClick={() => void onApprove()} disabled={!canApprove || busy} title="Approve only the latest assistant-proposed action in this conversation">Approve</button>
+          <button type="button" className="btn primary" onClick={submit} disabled={busy}>{busy ? "Working…" : "Send"}</button>
+        </div>
+        <span className="small">Different conversations can run concurrently. Approve is scoped to the latest assistant proposal in this conversation. Guided mode can author copy-pasteable code; you remain the write/commit boundary.</span>
       </div>
     </div>
   </div>;

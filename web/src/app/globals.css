@@ -9,6 +9,9 @@
   --accent-bg: #252a3d;
   --danger: #ffb6b6;
   --success: #bfe7ca;
+  --user-bg: #1f2c46;
+  --user-border: #3b5685;
+  --user-label: #9fb7ff;
 }
 * { box-sizing: border-box; }
 html, body { margin: 0; height: 100%; min-height: 100%; background: var(--bg); color: var(--text); font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
@@ -46,7 +49,19 @@ button { cursor: pointer; }
 .message { margin-bottom: 28px; }
 .message-label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .08em; margin-bottom: 8px; }
 .message-body { white-space: pre-wrap; word-break: break-word; line-height: 1.58; font-size: 14px; }
-.message.user .message-body { background: var(--panel-2); border-radius: 12px; padding: 12px 14px; display: inline-block; max-width: 90%; }
+.message.user { display: flex; flex-direction: column; align-items: flex-end; }
+.message.user .message-heading { width: min(90%, 100%); }
+.message.user .message-label { color: var(--user-label); }
+.message.user .message-body {
+  background: var(--user-bg);
+  border: 1px solid var(--user-border);
+  color: #f2f5ff;
+  border-radius: 12px;
+  padding: 12px 14px;
+  display: inline-block;
+  max-width: 90%;
+  box-shadow: 0 1px 0 rgba(255,255,255,.025) inset;
+}
 .message.event { border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; background: #111319; }
 .composer { border-top: 1px solid var(--line); padding: 14px max(20px, calc((100% - 820px) / 2)) 18px; background: rgba(12,13,16,.96); }
 .composer-box { border: 1px solid var(--line); background: var(--panel); border-radius: 13px; padding: 10px; }
@@ -176,3 +191,13 @@ select.input { appearance: auto; }
 .code-copy { border: 1px solid var(--line); background: var(--panel-2); color: var(--text); border-radius: 6px; padding: 4px 7px; font-size: 11px; }
 .code-copy:hover { border-color: #4b5262; }
 .markdown .code-frame pre { margin: 0; border: 0; border-radius: 0; }
+
+/* Conversation concurrency + explicit approval. */
+.btn.approve {
+  border-color: #6f7bb8;
+  color: #d9ddff;
+  background: #22283b;
+  font-weight: 650;
+}
+.btn.approve:hover:not(:disabled) { border-color: #909be0; }
+.nav-item.running { border-left: 2px solid var(--accent); }

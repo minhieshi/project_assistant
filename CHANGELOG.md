@@ -1,3 +1,35 @@
+# v0.8.12
+
+## 0.8.12 — Conversation navigation polish
+
+- Selecting a conversation now jumps directly to the bottom once that conversation has loaded, even when it has the same number of entries as the previously selected chat.
+- New entries in the current conversation retain smooth follow-to-bottom behaviour.
+- User prompts now use a distinct blue-toned, right-aligned bubble and accented label so prompt/assistant boundaries are easier to scan in long conversations.
+- No backend retrieval, memory, MCP, or conversation persistence behaviour changed.
+
+# v0.8.11
+
+## 0.8.11 — Faster response finalisation and Markdown rendering
+
+- Sends the exact persisted assistant entry in the final SSE frame so the browser can replace the raw streaming bubble immediately without refetching the entire conversation.
+- Moves post-response conversation indexing off the critical response path; the durable Markdown write completes first and best-effort embedding/index maintenance runs on a single background worker.
+- Preserves unchanged conversation-entry object identity across later reloads and gives `Message` a content comparator so historical Markdown is not reparsed when only a new turn changed.
+- Reuses stable `react-markdown` plugin/component objects and keeps the existing off-screen `content-visibility` optimisation while avoiding unnecessary Markdown reparses on long conversations.
+- Keeps the v0.8.10 conversation concurrency and scoped Approve behaviour unchanged.
+
+# v0.8.10
+
+## 0.8.10 — Concurrent conversations + scoped Approve button
+
+- Allows independent conversations to stream concurrently in the web UI; each conversation keeps its own running state, streamed text, error and retrieval context.
+- Keeps one active response per conversation. A second simultaneous turn in the same conversation returns HTTP 409 instead of interleaving Markdown history.
+- Prevents a background conversation completion from replacing the conversation/project currently visible in the browser.
+- Serialises only shared post-response indexing/manifest writes while leaving retrieval and inference concurrent across conversations.
+- Makes `last_context.md` writes atomic so concurrent context compilation cannot leave a partial debug snapshot.
+- Adds a visible **Approve** button for the latest assistant proposal. Approval is persisted as a normal user turn and is explicitly scoped to that latest proposal only.
+- Approval does not grant permanent permissions, write access, destructive actions, or broader future scope.
+- Adds concurrency regression tests; full backend suite passes.
+
 # v0.8.9
 
 ## 0.8.9 — Conversation recovery and streaming resilience

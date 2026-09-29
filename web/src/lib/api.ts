@@ -8,6 +8,7 @@ import type {
   IndexStatus,
   MCPServer,
   MCPProbe,
+  ConversationEntry,
 } from "./types";
 
 const API_BASE = "/api/backend";
@@ -61,7 +62,7 @@ export const api = {
 export type StreamCallbacks = {
   onContext?: (context: ContextSummary) => void;
   onDelta?: (text: string) => void;
-  onDone?: () => void;
+  onDone?: (entry?: ConversationEntry) => void;
 };
 
 export async function streamChat(projectId: string, conversationId: string, message: string, mode: "chat" | "guided", callbacks: StreamCallbacks) {
@@ -98,7 +99,7 @@ export async function streamChat(projectId: string, conversationId: string, mess
       const payload = JSON.parse(data);
       if (event === "context") callbacks.onContext?.(payload as ContextSummary);
       if (event === "delta") callbacks.onDelta?.(payload.text ?? "");
-      if (event === "done") callbacks.onDone?.();
+      if (event === "done") callbacks.onDone?.(payload.entry as ConversationEntry | undefined);
       if (event === "error") throw new Error(payload.message ?? "Unknown stream error");
     }
   }

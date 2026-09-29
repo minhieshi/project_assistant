@@ -271,7 +271,7 @@ def main() -> None:
     assistant = ProjectAssistant.build(project_dir)
 
     if args.command == "index":
-        print(json.dumps(assistant.indexer.index_changed(), indent=2))
+        print(json.dumps(assistant.index_changed(), indent=2))
     elif args.command == "consolidate":
         result = assistant.consolidate_memory(force=args.force)
         print(json.dumps({

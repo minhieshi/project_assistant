@@ -14,6 +14,7 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from ..config import ProjectConfig, SourceRoot
 from ..conversations import ConversationStore
+from ..concurrency import ConversationRunCoordinator
 from ..knowledge_graph import KnowledgeGraph
 from ..index_status import IndexStatusStore
 from ..mcp_client import MCPManager
@@ -40,6 +41,7 @@ from .schemas import (
 API_TOKEN = load_or_create_api_token()
 MCP_REGISTRY = MCPServerRegistry()
 MCP_MANAGER = MCPManager(registry=MCP_REGISTRY)
+CONVERSATION_RUNS = ConversationRunCoordinator()
 
 
 def _safe_error_message(exc: Exception) -> str:
@@ -117,7 +119,7 @@ async def _lifespan(app: FastAPI):
                 pass
 
 
-app = FastAPI(title="Local Project Assistant", version="0.8.9", lifespan=_lifespan)
+app = FastAPI(title="Local Project Assistant", version="0.8.12", lifespan=_lifespan)
 app.add_middleware(TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost", "testserver"])
 
 
@@ -135,7 +137,7 @@ async def local_api_auth(request: Request, call_next):
 
 @app.get("/health")
 def health() -> dict:
-    return {"status": "ok", "version": "0.8.7"}
+    return {"status": "ok", "version": "0.8.12"}
 
 
 @app.get("/api/status")
@@ -145,7 +147,7 @@ def status() -> dict:
 
     settings = PortkeySettings.from_env()
     return {
-        "version": "0.8.7",
+        "version": "0.8.12",
         "projects_root": str(registry.projects_root),
         "portkey": {
             "base_url": settings.base_url,
@@ -353,7 +355,7 @@ def remove_source(project_id: str, source_name: str) -> dict:
 async def index_project(project_id: str) -> dict:
     try:
         assistant = assistant_for(project_id, refresh=True)
-        return await asyncio.to_thread(assistant.indexer.index_changed)
+        return await asyncio.to_thread(assistant.index_changed)
     except Exception as exc:
         raise _error(exc)
 
@@ -444,8 +446,20 @@ def get_conversation(project_id: str, conversation_id: str) -> dict:
 def stream_chat(project_id: str, conversation_id: str, body: ChatRequest):
     try:
         assistant = assistant_for(project_id)
+        # Resolve the conversation before taking a lease so a stale/deleted ID is a
+        # normal 404 rather than an apparent concurrency conflict.
+        assistant.conversations.find(conversation_id)
+    except FileNotFoundError as exc:
+        raise _error(exc, 404)
     except Exception as exc:
         raise _error(exc)
+
+    lease = CONVERSATION_RUNS.try_acquire(project_id, conversation_id)
+    if lease is None:
+        raise HTTPException(
+            status_code=409,
+            detail="This conversation already has a response in progress. Different conversations can run concurrently.",
+        )
 
     def generate() -> Iterable[str]:
         try:
@@ -467,9 +481,13 @@ def stream_chat(project_id: str, conversation_id: str, body: ChatRequest):
                 elif event[0] == "delta":
                     yield _sse("delta", {"text": event[1]})
                 elif event[0] == "done":
-                    yield _sse("done", {"ok": True})
+                    entry = event[1]
+                    payload = entry.to_dict() if hasattr(entry, "to_dict") else None
+                    yield _sse("done", {"ok": True, "entry": payload})
         except Exception as exc:
             yield _sse("error", {"message": _safe_error_message(exc)})
+        finally:
+            lease.release()
 
     return StreamingResponse(generate(), media_type="text/event-stream", headers={"Cache-Control": "no-store"})
 

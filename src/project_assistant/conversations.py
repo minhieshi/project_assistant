@@ -131,17 +131,22 @@ class ConversationStore:
             raise ValueError("Conversation entry content was None; refusing to write an invalid entry")
         return str(text)
 
-    def append(self, conversation_id: str, role: str, text: str) -> Path:
+    def append_entry(self, conversation_id: str, role: str, text: str) -> tuple[Path, ConversationEntry]:
         conv = self.find(conversation_id)
         rendered = self._entry_text(text)
         role_title = {"user": "User", "assistant": "Assistant", "system": "System"}.get(role, role.title())
+        timestamp = utc_now()
         with conv.path.open("a", encoding="utf-8") as fh:
-            fh.write(f"\n## {role_title} · {utc_now()}\n\n{rendered.rstrip()}\n")
+            fh.write(f"\n## {role_title} · {timestamp}\n\n{rendered.rstrip()}\n")
             fh.flush()
             os.fsync(fh.fileno())
         private_file(conv.path)
         self._updated(conv.path)
-        return conv.path
+        return conv.path, ConversationEntry(title=role_title, timestamp=timestamp, body=rendered.rstrip(), role=role)
+
+    def append(self, conversation_id: str, role: str, text: str) -> Path:
+        path, _entry = self.append_entry(conversation_id, role, text)
+        return path
 
     def append_event(self, conversation_id: str, title: str, text: str) -> Path:
         conv = self.find(conversation_id)

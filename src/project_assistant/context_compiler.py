@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import math
 import re
 from collections import Counter
@@ -301,13 +302,22 @@ class ContextCompiler:
         queries = "\n".join(f"- {q}" for q in compiled.retrieval_queries) or "- none"
         actions = "\n".join(f"- {a}" for a in compiled.retrieval_actions) or "- none"
         warnings = "\n".join(f"- {w}" for w in compiled.retrieval_warnings) or "- none"
-        path.write_text(
+        rendered = (
             f"# Compiled context\n\nEstimated tokens: {compiled.estimated_tokens}\n\n"
             f"Routed repositories: {routed}\n\n## Retrieval queries\n{queries}\n\n"
-            f"## Agent retrieval actions\n{actions}\n\n## Retrieval warnings\n{warnings}\n\n{compiled.text}\n",
-            encoding="utf-8",
+            f"## Agent retrieval actions\n{actions}\n\n## Retrieval warnings\n{warnings}\n\n{compiled.text}\n"
         )
-        private_file(path)
+        # Concurrent conversations can compile context simultaneously. Write to a
+        # unique sibling then atomically replace last_context.md so the debug file
+        # is always one complete snapshot rather than interleaved/truncated text.
+        temp = path.with_name(f".{path.name}.{os.getpid()}.{id(compiled)}.tmp")
+        try:
+            temp.write_text(rendered, encoding="utf-8")
+            private_file(temp)
+            os.replace(temp, path)
+            private_file(path)
+        finally:
+            temp.unlink(missing_ok=True)
         return path
 
     def _expand_hits(self, direct: list[SearchHit], graph_hits: list[GraphHit], limit: int) -> list[SearchHit]:

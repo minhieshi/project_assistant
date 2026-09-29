@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass, field
 from pathlib import Path
+from threading import Lock
 
 from .config import PortkeySettings, ProjectConfig
 from .context_compiler import ContextCompiler
@@ -25,6 +27,14 @@ PROJECT ASSISTANT ROLE — READ-ONLY PROJECT INTELLIGENCE + CODE AUTHORING
 - Keep the human as the write boundary: describe exactly what should change, but do not claim to apply, stage, commit, build or test it.
 - When recommending or generating implementation work, identify repositories, relative paths, symbols/components, constraints, validation steps and uncertainties.
 """.strip()
+
+APPROVAL_SEMANTICS = """
+APPROVAL BUTTON SEMANTICS
+- A user turn beginning with "Approved — proceed with the latest action or step you proposed" is explicit approval only for the most recent assistant-proposed action in this conversation.
+- Do not treat that approval as permission for unrelated future actions, permanent permissions, write access, destructive operations, or broader scope.
+- If the immediately preceding conversational state contains no pending proposed action, say there is nothing pending to approve instead of inventing work.
+""".strip()
+
 
 GUIDED_IMPLEMENTATION = """
 GUIDED IMPLEMENTATION MODE — HUMAN-APPLIED CHANGES
@@ -80,6 +90,11 @@ class ProjectAssistant:
     model: ChatModel
     retrieval_agent: RetrievalAgent
     consolidator: MemoryConsolidator
+    _index_lock: Lock = field(default_factory=Lock, repr=False)
+    _index_executor: ThreadPoolExecutor = field(
+        default_factory=lambda: ThreadPoolExecutor(max_workers=1, thread_name_prefix="project-assistant-index"),
+        repr=False,
+    )
 
     @classmethod
     def build(cls, project_dir: Path, model: ChatModel | None = None, embedding_function=None) -> "ProjectAssistant":
@@ -104,17 +119,30 @@ class ProjectAssistant:
         chat_model = model or PortkeyChatModel(settings)
         toolkit = RetrievalToolkit(project_dir, config, indexer, graph)
         retrieval_agent = RetrievalAgent(chat_model, toolkit)
+        index_lock = Lock()
+
+        def index_file_serialized(path: Path) -> None:
+            with index_lock:
+                indexer.index_specific_file(path)
+
         consolidator = MemoryConsolidator(
             project_dir,
             conversations,
             chat_model,
-            indexer.index_specific_file,
+            index_file_serialized,
             consolidation_dir=config.project_path(project_dir, config.consolidation_dir),
             user_memory_path=config.project_path(project_dir, config.user_memory_path),
             state_path=config.project_path(project_dir, config.consolidation_state_path),
             interval_hours=config.consolidation_interval_hours,
         )
-        return cls(project_dir, config, conversations, indexer, compiler, chat_model, retrieval_agent, consolidator)
+        return cls(
+            project_dir, config, conversations, indexer, compiler, chat_model, retrieval_agent, consolidator,
+            _index_lock=index_lock,
+        )
+
+    def index_changed(self) -> dict[str, int]:
+        with self._index_lock:
+            return self.indexer.index_changed()
 
     def consolidate_memory(self, *, force: bool = False) -> ConsolidationResult:
         return self.consolidator.consolidate(force=force)
@@ -173,7 +201,12 @@ class ProjectAssistant:
             "- If a required artefact still was not surfaced after the bounded retrieval rounds, identify the exact missing artefact/search rather than pretending the project has no access to it.\n"
             "- Never claim you read a file unless it appears in retrieved context."
         )
-        system = self._system_prompt() + "\n\n" + READ_ONLY_PROJECT_INTELLIGENCE + "\n\n" + retrieval_rules
+        system = (
+            self._system_prompt()
+            + "\n\n" + READ_ONLY_PROJECT_INTELLIGENCE
+            + "\n\n" + APPROVAL_SEMANTICS
+            + "\n\n" + retrieval_rules
+        )
         if mode == "guided":
             system += "\n\n" + GUIDED_IMPLEMENTATION
         user = f"{context.text}\n\n## CURRENT USER REQUEST\n\n{user_text}"
@@ -214,9 +247,12 @@ class ProjectAssistant:
             response = self.model.complete(system, user)
             chunks.append(response)
             yield ("delta", response)
-        path = self.conversations.append(conversation_id, "assistant", response)
-        self._safe_index(path)
-        yield ("done", response)
+        path, entry = self.conversations.append_entry(conversation_id, "assistant", response)
+        # The conversation write is already durable. Do not keep the user staring at
+        # raw streamed Markdown while embeddings/index maintenance catches up.
+        # Indexing is best-effort and can safely finish after the response is rendered.
+        self._schedule_index(path)
+        yield ("done", entry)
 
 
     def _live_git_state_all_sources(self) -> str:
@@ -248,12 +284,25 @@ class ProjectAssistant:
     def _live_git_state_for_context(self, context=None) -> str:
         return self._live_git_state_all_sources()
 
+    def _schedule_index(self, path: Path) -> None:
+        try:
+            self._index_executor.submit(self._safe_index, path)
+        except RuntimeError:
+            # Interpreter/app shutdown can close the executor. The Markdown turn is
+            # already durable and a later full index can catch up.
+            return
+
     def _safe_index(self, path: Path) -> None:
         # Conversation durability must not depend on the embedding endpoint being
         # available. If reindexing fails, preserve the Markdown and record a local
         # retryable error instead of losing the turn.
         try:
-            self.indexer.index_specific_file(path)
+            # Multiple conversations may finish at the same time. The indexer
+            # updates a shared manifest/Chroma collection, so serialize only this
+            # post-response indexing step while leaving retrieval/inference fully
+            # concurrent across conversations.
+            with self._index_lock:
+                self.indexer.index_specific_file(path)
         except Exception as exc:
             error_path = self.project_dir / ".assistant/index_errors.log"
             error_path.parent.mkdir(parents=True, exist_ok=True)
