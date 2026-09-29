@@ -1,4 +1,4 @@
-# Local Project Assistant — v0.8.7
+# Local Project Assistant — v0.8.9
 
 Project Assistant recreates the useful parts of the enterprise ChatGPT browser experience locally while using approved Portkey routes for GPT-5.6 inference and embeddings. It keeps persistent project conversations, indexes multiple repositories, compiles high-signal project context, maintains consolidated user/project memory, and can produce source-grounded **copy-pasteable implementation code** without writing to registered source repositories itself.
 
@@ -21,13 +21,27 @@ Registered source repositories remain read-only to Project Assistant. It does no
 
 For installation, environment variables, project/source management, **guided implementation**, conversation consolidation and memory locations, MCP configuration/authentication, the complete CLI/API reference, persistent-state layout and troubleshooting, see **[`docs/USER_GUIDE.md`](docs/USER_GUIDE.md)**.
 
-## v0.8.7 — MCP retrieval integration + guided implementation + memory
+## v0.8.9 — Conversation recovery and streaming resilience
 
-v0.8.7 keeps the three active feature strands together and now completes the first read-only MCP retrieval layer:
+v0.8.9 hardens the Markdown conversation path after a failed stream/write could leave the UI pointing at an unloadable conversation:
+
+- tolerates Portkey streaming chunks with no text delta instead of dereferencing `None.content`;
+- normalises empty/optional model text safely before conversation persistence;
+- creates conversation headers atomically and fsyncs appended turns;
+- recovers a conversation ID from the generated filename when front matter is damaged;
+- reports only genuine missing conversations as HTTP 404; parse/I/O failures now retain their real error status/message;
+- if a selected conversation truly disappears, the browser refreshes the authoritative list and moves to another valid conversation instead of retrying the dead ID indefinitely.
+
+No reindex is required for this release.
+
+## v0.8.8 — Zowe MCP + MCP retrieval + guided implementation + memory
+
+v0.8.8 keeps the three active feature strands together and adds the first built-in read-only Zowe MCP server:
 
 - **Guided implementation** from the v0.8.0.03 branch replaces the OpenCode handoff workflow.
 - **Conversation consolidation + user memory** remain from the memory-enabled v0.8.0 branch.
-- **Authenticated MCP connectivity + locally approved read-only MCP retrieval** build on v0.8.2–v0.8.6.
+- **Authenticated MCP connectivity + locally approved read-only MCP retrieval** build on v0.8.2–v0.8.7.
+- **Built-in Zowe MCP** exposes a deliberately small fixed set of read-only z/OS functions through the already-configured local Zowe CLI.
 
 The composer now has two modes:
 
@@ -166,12 +180,16 @@ project-assistant mcp-add ceb https://YOUR-INTERNAL-CEB-MCP/mcp --name CEB
 project-assistant mcp-connect ceb
 ```
 
-Example local stdio server:
+Built-in Zowe MCP (run this from a directory where your normal `zowe` CLI configuration works):
 
 ```bash
-project-assistant mcp-add-local zowe python -m project_assistant_mcp.zowe --name Zowe
+project-assistant mcp-add-local zowe project-assistant-zowe-mcp --name Zowe --cwd "$PWD"
 project-assistant mcp-connect zowe
+project-assistant mcp-tools zowe
+project-assistant mcp-allow zowe zowe_info list_datasets list_dataset_members read_dataset get_job_status get_job_spool
 ```
+
+The built-in server exposes only `zowe_info`, `list_datasets`, `list_dataset_members`, `read_dataset`, `get_job_status`, and `get_job_spool`. It does not accept arbitrary commands and cannot submit jobs, upload, modify, rename, or delete z/OS resources.
 
 After connecting a server, explicitly approve the tools that chat may use. In the **Connections** tab, tick **Allow in chat retrieval** only for tools you intend to be read-only. Server `read_only_hint` metadata is shown but is not trusted as authorization.
 
@@ -225,7 +243,7 @@ Configure the Portkey environment variables, then start with your existing workf
 ./scripts/dev.sh
 ```
 
-No full reindex is required for the v0.8.7 MCP retrieval layer.
+No full reindex is required for the v0.8.8 Zowe MCP layer.
 
 ## CLI examples
 

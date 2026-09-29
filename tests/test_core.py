@@ -154,6 +154,28 @@ class CoreTests(unittest.TestCase):
             self.assertIn("## User", text)
             self.assertIn("## Assistant", text)
 
+    def test_conversation_recovers_id_from_filename_when_front_matter_is_damaged(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = ConversationStore(Path(tmp))
+            conv = store.create("Recover me")
+            conv.path.write_text(
+                "# Recover me\n\n## User · 2026-09-29T00:00:00+00:00\n\nstill here\n",
+                encoding="utf-8",
+            )
+            recovered = store.find(conv.id)
+            self.assertEqual(recovered.path, conv.path)
+            self.assertEqual(recovered.title, "Recover me")
+            self.assertEqual(store.entries(conv.id)[0].body, "still here")
+
+    def test_conversation_rejects_none_entry_without_corrupting_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = ConversationStore(Path(tmp))
+            conv = store.create("Safe write")
+            before = conv.path.read_text(encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "content was None"):
+                store.append(conv.id, "assistant", None)  # type: ignore[arg-type]
+            self.assertEqual(conv.path.read_text(encoding="utf-8"), before)
+
 
 class SecurityTests(unittest.TestCase):
     def test_egress_policy_blocks_high_confidence_secret_but_allows_references(self):
@@ -422,7 +444,7 @@ class WebFoundationTests(unittest.TestCase):
     def test_api_app_imports_without_initialising_rag(self):
         from project_assistant.api.app import app
 
-        self.assertEqual(app.version, "0.8.7")
+        self.assertEqual(app.version, "0.8.9")
 
     def test_portkey_url_is_explicit_and_does_not_default_public(self):
         from project_assistant.config import PortkeySettings
@@ -654,6 +676,31 @@ class ChatRouteTests(unittest.TestCase):
         self.assertEqual(calls[0]["reasoning_effort"], "high")
         self.assertEqual(calls[1]["reasoning_effort"], "high")
         self.assertTrue(calls[1]["stream"])
+
+    def test_chat_stream_ignores_metadata_chunks_without_delta_content(self):
+        from types import SimpleNamespace
+        from project_assistant.config import PortkeySettings
+        from project_assistant.portkey import PortkeyChatModel
+
+        class Endpoint:
+            def create(self, **kwargs):
+                return [
+                    SimpleNamespace(choices=[SimpleNamespace(delta=None)]),
+                    SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(content=None))]),
+                    SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(content="OK"))]),
+                ]
+
+        client = SimpleNamespace(chat=SimpleNamespace(completions=Endpoint()))
+        settings = PortkeySettings(
+            base_url="https://gateway.example.invalid/v1",
+            api_key="",
+            chat_model="@enterprise/gpt-5-6-sol",
+            embedding_model="",
+            api_mode="chat_completions",
+            reasoning_effort="high",
+        )
+        model = PortkeyChatModel(settings, client_override=client)
+        self.assertEqual("".join(model.stream("system", "user")), "OK")
 
     def test_responses_sends_high_reasoning(self):
         from types import SimpleNamespace

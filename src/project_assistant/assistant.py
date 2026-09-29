@@ -198,9 +198,18 @@ class ProjectAssistant:
         streamer = getattr(self.model, "stream", None)
         if callable(streamer):
             for delta in streamer(system, user):
-                chunks.append(delta)
-                yield ("delta", delta)
+                if delta is None:
+                    continue
+                text_delta = str(delta)
+                if not text_delta:
+                    continue
+                chunks.append(text_delta)
+                yield ("delta", text_delta)
             response = "".join(chunks)
+            if not response:
+                raise RuntimeError(
+                    "Chat stream completed without assistant text. The user message was saved and the conversation remains intact."
+                )
         else:
             response = self.model.complete(system, user)
             chunks.append(response)

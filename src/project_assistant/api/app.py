@@ -117,7 +117,7 @@ async def _lifespan(app: FastAPI):
                 pass
 
 
-app = FastAPI(title="Local Project Assistant", version="0.8.7", lifespan=_lifespan)
+app = FastAPI(title="Local Project Assistant", version="0.8.9", lifespan=_lifespan)
 app.add_middleware(TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost", "testserver"])
 
 
@@ -433,8 +433,11 @@ def get_conversation(project_id: str, conversation_id: str) -> dict:
             "markdown": conversation.path.read_text(encoding="utf-8", errors="replace"),
             "entries": [entry.to_dict() for entry in store.entries(conversation_id)],
         }
-    except Exception as exc:
+    except FileNotFoundError as exc:
         raise _error(exc, 404)
+    except Exception as exc:
+        # Do not disguise parse/permission/I/O bugs as a missing conversation.
+        raise _error(exc, 500)
 
 
 @app.post("/api/projects/{project_id}/conversations/{conversation_id}/stream")

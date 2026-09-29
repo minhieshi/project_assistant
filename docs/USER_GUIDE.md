@@ -1,8 +1,8 @@
 # Project Assistant v0.8.7 — User Guide
 
-This guide describes the behaviour that is actually implemented in **v0.8.7**. It covers setup, projects and source repositories, indexing and retrieval, conversation persistence and consolidation, local state, MCP credential storage, the CLI, the local API, and troubleshooting.
+This guide describes the behaviour that is actually implemented in **v0.8.9**. It covers setup, projects and source repositories, indexing and retrieval, conversation persistence and consolidation, local state, MCP credential storage, the CLI, the local API, and troubleshooting.
 
-> **MCP status:** v0.8.7 connects authenticated MCP servers to the normal retrieval planner through an explicit local per-server tool allowlist. Only tools you approve in the Connections tab or with `mcp-allow` are exposed to chat retrieval. MCP tool descriptions, schemas and results are treated as untrusted external evidence, and obvious mutation-oriented tool names are blocked locally even if the server labels them read-only.
+> **MCP status:** v0.8.8 connects authenticated MCP servers to the normal retrieval planner through an explicit local per-server tool allowlist. Only tools you approve in the Connections tab or with `mcp-allow` are exposed to chat retrieval. MCP tool descriptions, schemas and results are treated as untrusted external evidence, and obvious mutation-oriented tool names are blocked locally even if the server labels them read-only.
 
 ## 1. What Project Assistant is
 
@@ -550,7 +550,7 @@ export MEMORY_CONSOLIDATION_ENABLED=0
 
 Manual `project-assistant ... consolidate` still remains available.
 
-## 10. MCP connections and chat retrieval (v0.8.7)
+## 10. MCP connections and chat retrieval (v0.8.8)
 
 MCP server configuration is global to Project Assistant rather than stored inside a project. This lets the same Atlassian, CEB or local infrastructure MCP connection be reused across multiple projects.
 
@@ -714,11 +714,55 @@ project-assistant mcp-add-local my-local-mcp \
   --cwd /absolute/path/to/server/project
 ```
 
-This is the mechanism intended for the Zowe MCP server: no separate HTTP port and no manual background daemon are required.
+This is also how the built-in Zowe MCP runs: no separate HTTP port and no manual background daemon are required.
+
+### Built-in Zowe MCP
+
+The Zowe server is shipped as `project_assistant_mcp.zowe`. It shells out only to fixed, read-only Zowe CLI commands and uses your existing Zowe configuration/profile. Run the registration command from a directory where direct Zowe CLI commands already work; `--cwd` matters when you use a project-level Zowe configuration.
+
+```bash
+source .venv/bin/activate
+project-assistant mcp-add-local zowe project-assistant-zowe-mcp --name Zowe --cwd "$PWD"
+project-assistant mcp-connect zowe
+project-assistant mcp-tools zowe
+```
+
+Expected tools:
+
+```text
+zowe_info
+list_datasets
+list_dataset_members
+read_dataset
+get_job_status
+get_job_spool
+```
+
+Approve them for chat retrieval explicitly:
+
+```bash
+project-assistant mcp-allow zowe \
+  zowe_info \
+  list_datasets \
+  list_dataset_members \
+  read_dataset \
+  get_job_status \
+  get_job_spool
+```
+
+Then test in chat with a concrete resource you are authorised to read, for example `Using Zowe, list MYHLQ.TEST.* data sets` or `Using Zowe, show the status for JOB12345`. The server never accepts arbitrary Zowe command strings. Dataset/member names and job IDs are validated, subprocesses are launched without a shell, command execution is timed out, and returned output is bounded before it enters model context.
+
+Environment variables `ZOWE_CLI_HOME`, `NODE_EXTRA_CA_CERTS`, standard proxy variables, and SSL CA path variables are selectively forwarded to the Zowe MCP child process when they are present. Optional limits are:
+
+```bash
+ZOWE_MCP_TIMEOUT_SECONDS=60
+ZOWE_MCP_MAX_OUTPUT_CHARS=60000
+ZOWE_MCP_CLI_PATH=/absolute/path/to/zowe   # only if zowe is not on PATH
+```
 
 ### Chat retrieval allowlist
 
-A successful MCP connection does **not** expose every discovered tool to GPT. v0.8.7 adds a second, local permission boundary: each server stores an explicit `allowed_tools` list. Only those exact server/tool pairs are advertised to the retrieval planner.
+A successful MCP connection does **not** expose every discovered tool to GPT. v0.8.8 keeps a second, local permission boundary: each server stores an explicit `allowed_tools` list. Only those exact server/tool pairs are advertised to the retrieval planner.
 
 In the **Connections** tab:
 
@@ -758,7 +802,7 @@ Do not treat an MCP server's `read_only_hint`, description, schema text, or retu
 - records the server and tool in retrieval provenance;
 - does not grant permission merely because the server advertises `read_only_hint=true`.
 
-The remaining MCP-specific feature work is primarily the **Zowe MCP server itself** and any richer first-class MCP resource handling; authenticated tool-based retrieval is implemented in v0.8.7.
+The built-in **Zowe MCP server is now implemented**. Remaining MCP-specific work is mainly richer first-class resource/template retrieval and any future read-only Zowe capabilities we deliberately choose to add.
 
 ## 11. Complete CLI reference
 
@@ -1432,7 +1476,7 @@ MCP connectivity + retrieval (implemented)
   └── SearchHit normalisation + provenance/output/egress controls
 
 remaining
-  ├── read-only Zowe MCP server exposing approved Zowe functions
+  ├── read-only Zowe MCP server exposing approved Zowe functions (implemented)
   └── richer first-class MCP resource/template retrieval where useful
 ```
 
@@ -1455,3 +1499,23 @@ project-assistant mcp-connect atlassian
 ```
 
 The Connections screen exposes the same **Corporate TLS compatibility** option. This mode still requires a trusted certificate and valid hostname. It only removes Python's `VERIFY_X509_STRICT` flag; it never sets `verify=False`. Prefer having the corporate PKI issue RFC 5280-compliant certificates when that is practical.
+
+### Conversation 404 / interrupted stream recovery
+
+Conversation Markdown lives under `.assistant/conversations/`. In v0.8.9, a damaged front-matter ID can be recovered from the generated filename suffix, and the browser will move away from a genuinely missing conversation instead of retrying it indefinitely. New conversation headers are committed atomically and completed appends are flushed to disk.
+
+If a conversation fails to load, inspect the directory directly:
+
+```bash
+ls -lt .assistant/conversations
+find .assistant/conversations -maxdepth 1 -type f -name '*.md' -print
+```
+
+If the 404 message contains a conversation ID, look for the file containing that ID in its filename:
+
+```bash
+find .assistant/conversations -maxdepth 1 -type f -name '*-CONVERSATION_ID.md' -print
+```
+
+If the file exists, v0.8.9 can normally recover it even when the `conversation_id:` front-matter line is damaged. If the file itself no longer exists, Project Assistant cannot reconstruct unsaved text from that missing file; create/select another conversation and restore from version control or another copy if one exists.
+

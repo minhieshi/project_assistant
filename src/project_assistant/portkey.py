@@ -207,7 +207,7 @@ class PortkeyChatModel:
                 input=user,
                 reasoning={"effort": self.settings.reasoning_effort},
             )
-            return response.output_text
+            return str(getattr(response, "output_text", "") or "")
 
         response = client.chat.completions.create(
             model=self.settings.chat_model,
@@ -217,8 +217,12 @@ class PortkeyChatModel:
             ],
             reasoning_effort=self.settings.reasoning_effort,
         )
-        content = response.choices[0].message.content
-        return content or ""
+        choices = getattr(response, "choices", None) or []
+        if not choices:
+            return ""
+        message = getattr(choices[0], "message", None)
+        content = getattr(message, "content", None)
+        return str(content or "")
 
     def stream(self, system: str, user: str) -> Iterable[str]:
         self._check(system, user)
@@ -248,8 +252,10 @@ class PortkeyChatModel:
             stream=True,
         )
         for chunk in stream:
-            if not chunk.choices:
+            choices = getattr(chunk, "choices", None) or []
+            if not choices:
                 continue
-            delta = chunk.choices[0].delta.content
+            delta_obj = getattr(choices[0], "delta", None)
+            delta = getattr(delta_obj, "content", None)
             if delta:
-                yield delta
+                yield str(delta)

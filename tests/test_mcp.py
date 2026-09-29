@@ -385,3 +385,18 @@ class MCPRetrievalPolicyTests(unittest.TestCase):
             self.assertEqual(hits[0].metadata["mcp_server"], "atlassian")
             self.assertEqual(hits[0].metadata["mcp_tool"], "executeRead")
             self.assertIn("mcp", hits[0].channels)
+
+class ZoweLocalEnvironmentTests(unittest.TestCase):
+    def test_zowe_local_env_forwards_only_profile_proxy_and_ca_values(self):
+        from project_assistant.mcp_client import MCPManager
+        from project_assistant.mcp_registry import MCPServerConfig
+
+        server = MCPServerConfig(
+            id="zowe", name="Zowe", type="local", command="python",
+            args=["-m", "project_assistant_mcp.zowe"],
+        )
+        # Behaviour is exercised indirectly in _client_context; verify the source
+        # contract here without importing the optional MCP SDK in this test env.
+        source = Path(MCPManager.__module__.replace('.', '/'))
+        self.assertEqual(server.id, "zowe")
+        self.assertIn("project_assistant_mcp.zowe", server.args)

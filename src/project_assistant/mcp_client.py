@@ -325,9 +325,30 @@ class MCPManager:
         if server.type == "local":
             from mcp.client.stdio import stdio_client
 
+            inherited_env = None
+            if server.id.lower() == "zowe" or "project_assistant_mcp.zowe" in server.args:
+                # The SDK intentionally inherits only a small safe environment for
+                # stdio children. Zowe commonly relies on a few non-secret profile,
+                # proxy, and CA variables that are present in the user's shell, so
+                # forward only this explicit compatibility allowlist.
+                zowe_env_keys = (
+                    "ZOWE_CLI_HOME",
+                    "NODE_EXTRA_CA_CERTS",
+                    "SSL_CERT_FILE",
+                    "SSL_CERT_DIR",
+                    "HTTPS_PROXY",
+                    "HTTP_PROXY",
+                    "NO_PROXY",
+                    "https_proxy",
+                    "http_proxy",
+                    "no_proxy",
+                )
+                inherited_env = {key: os.environ[key] for key in zowe_env_keys if os.environ.get(key)} or None
+
             params = StdioServerParameters(
                 command=server.command or "",
                 args=list(server.args),
+                env=inherited_env,
                 cwd=Path(server.cwd).expanduser().resolve() if server.cwd else None,
             )
             # Use the explicit transport form. It keeps the subprocess lifecycle

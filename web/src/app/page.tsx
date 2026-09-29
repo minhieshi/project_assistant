@@ -67,7 +67,26 @@ export default function Home() {
   }, []);
 
   const loadConversation = useCallback(async (pid: string, cid: string) => {
-    setConversation(await api.conversation(pid, cid));
+    try {
+      setConversation(await api.conversation(pid, cid));
+    } catch (e) {
+      const message = String(e);
+      if (!message.includes("404")) throw e;
+
+      // A conversation file may have been removed/corrupted outside the UI or a
+      // previous write may have failed. Refresh the authoritative list and move
+      // away from the dead ID instead of retrying it forever after restart.
+      const next = await api.conversations(pid);
+      setConversations(next);
+      const fallback = next.find((item) => item.id !== cid)?.id ?? "";
+      setConversation(null);
+      setConversationId(fallback);
+      setError(
+        fallback
+          ? `Conversation ${cid} could not be loaded. Switched to the most recent available conversation.`
+          : `Conversation ${cid} could not be loaded. Create a new conversation to continue.`
+      );
+    }
   }, []);
 
   const loadIndexStatus = useCallback(async (pid: string) => {

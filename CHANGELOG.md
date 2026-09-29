@@ -1,3 +1,28 @@
+# v0.8.9
+
+## 0.8.9 — Conversation recovery and streaming resilience
+
+- Makes Portkey chat streaming tolerant of metadata-only chunks where `choice.delta` or `delta.content` is `None`.
+- Normalises optional/empty model output before persistence and rejects `None` conversation entries with a clear error rather than an attribute failure.
+- Writes new conversation headers atomically and fsyncs appended conversation turns.
+- Recovers conversation identity from the generated `*-<conversation-id>.md` filename if YAML/front matter is damaged.
+- Avoids a second `stat()` race while sorting conversation files.
+- Returns HTTP 404 only for a genuinely missing conversation; other read/parse failures are no longer disguised as not-found.
+- Makes the browser recover from a stale/missing selected conversation by refreshing the server list and selecting a valid fallback instead of getting stuck on the dead ID.
+- Adds regression coverage for damaged front matter, `None` conversation writes, and metadata-only Portkey stream chunks.
+
+# v0.8.8
+
+## 0.8.8 — Built-in read-only Zowe MCP
+
+- Adds `project_assistant_mcp.zowe`, a local stdio MCP server backed by the user's existing Zowe CLI/profile configuration.
+- Exposes only six fixed read-only tools: `zowe_info`, `list_datasets`, `list_dataset_members`, `read_dataset`, `get_job_status`, and `get_job_spool`.
+- Never accepts arbitrary Zowe commands and never uses a shell; validates data-set/member/job identifiers before invoking the CLI.
+- Bounds command time and output size and redacts obvious credential/token material from surfaced Zowe errors.
+- Selectively forwards Zowe/profile/proxy/CA environment variables that the MCP SDK's deliberately minimal stdio environment would otherwise omit.
+- Integrates with the existing local MCP lifecycle and v0.8.7 per-server chat retrieval allowlist; no separate daemon or port is required.
+- Adds Zowe MCP setup/testing instructions and environment settings to the user guide.
+
 # v0.8.7
 
 ## 0.8.7 — Locally-approved MCP retrieval

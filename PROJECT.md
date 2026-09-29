@@ -39,14 +39,14 @@ Restore the high-value parts of the enterprise ChatGPT browser experience locall
 
 ## Current work
 
-v0.8.7 combines guided human-applied implementation, consolidated conversation/user memory, authenticated MCP connectivity, and locally-approved MCP tool retrieval. Retrieval/indexing/knowledge-graph work remains the core; source mutation remains outside Project Assistant.
+v0.8.8 combines guided human-applied implementation, consolidated conversation/user memory, authenticated MCP connectivity, and locally-approved MCP tool retrieval. Retrieval/indexing/knowledge-graph work remains the core; source mutation remains outside Project Assistant.
 
 
-## v0.8.7 — Guided implementation, memory and MCP retrieval
+## v0.8.8 — Guided implementation, memory and MCP retrieval
 
 The active workflow no longer hands implementation work to OpenCode. Project Assistant may now author complete source/config/test code while all registered source roots remain read-only. Larger coding requests are split into small steps; the assistant pauses before coding, re-reads likely targets live for the confirmed step, emits complete copy-pasteable units with exact repo/path/action metadata, then stops for the human to apply and validate.
 
-This is merged with the v0.8.0 conversation-consolidation/user-memory layer and the remote/local MCP connectivity line. v0.8.7 adds the missing retrieval bridge: only locally allowlisted MCP tools are advertised to the planner, and returned content is normalised into provenance-bearing retrieval evidence. Server read-only hints are never trusted as authorization.
+This is merged with the v0.8.0 conversation-consolidation/user-memory layer and the remote/local MCP connectivity line. v0.8.8 adds the missing retrieval bridge: only locally allowlisted MCP tools are advertised to the planner, and returned content is normalised into provenance-bearing retrieval evidence. Server read-only hints are never trusted as authorization.
 
 ## Known issues
 
