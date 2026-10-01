@@ -102,6 +102,9 @@ export type IndexStatus = {
   finished_at?: string | null;
   current_repo?: string | null;
   current_file?: string | null;
+  phase?: string | null;
+  processed: number;
+  total: number;
   scanned: number;
   eligible: number;
   indexed: number;

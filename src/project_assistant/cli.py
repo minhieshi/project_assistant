@@ -103,7 +103,7 @@ def main() -> None:
     p_chat = sub.add_parser("chat")
     p_chat.add_argument("conversation_id")
     p_chat.add_argument("message")
-    p_chat.add_argument("--guided", action="store_true", help="Use step-by-step guided implementation mode")
+    p_chat.add_argument("--guided", action="store_true", help="Use complete source-grounded guided implementation mode")
 
     p_search = sub.add_parser("search")
     p_search.add_argument("query")

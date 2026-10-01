@@ -273,7 +273,7 @@ class RetrievalAgent:
                 "Assess whether you have enough implementation/configuration/test context to answer or propose the change accurately. "
                 "If not, request the next read-only operations. Follow dependencies across registered source roots. "
                 "Do not ask the user to paste a file that can be found/read from a registered source root. "
-                + ("For change planning, do not declare sufficient until likely target files have been read live. For Git-backed target files, compare the working-tree file with git_show(HEAD, path) when material to the change. Live repository state above is authoritative; indexed Git metadata is historical only. " if purpose == "change" else "For guided implementation, do not declare sufficient until you have located the likely target/integration files and read the important targets live where possible. Follow cross-repository dependencies and retrieve the exact code needed to author the next human-applied step. " if purpose == "implementation" else "")
+                + ("For change planning, do not declare sufficient until likely target files have been read live. For Git-backed target files, compare the working-tree file with git_show(HEAD, path) when material to the change. Live repository state above is authoritative; indexed Git metadata is historical only. " if purpose == "change" else "For guided implementation, do not declare sufficient until you have located and read the tightly coupled target/integration/config/test files needed to complete the current requested change. Follow cross-repository dependencies and retrieve enough live source to author the full requested behaviour, not merely the next small step. " if purpose == "implementation" else "")
             )
             try:
                 raw = self.model.complete(system, user)
@@ -344,8 +344,8 @@ class RetrievalAgent:
             )
         elif purpose == "implementation":
             purpose_rules = (
-                " GUIDED-IMPLEMENTATION RULES: Locate the exact files, symbols, integration/configuration boundaries and tests needed for the next coherent implementation unit. "
-                "Retrieve enough context to implement a complete feature slice/file-level change rather than a few-line micro-step. Read all tightly coupled targets live before declaring sufficient, even when indexed snippets exist, because the final model may emit copy-pasteable replacement code across multiple related files. "
+                " GUIDED-IMPLEMENTATION RULES: Locate the exact files, symbols, integration/configuration boundaries and tests needed to complete the user's current requested change. "
+                "Retrieve enough context for the full requested feature/fix/playbook change rather than a next-step subset or few-line micro-step. Read all tightly coupled targets live before declaring sufficient, even when indexed snippets exist, because the final model may emit copy-pasteable replacement code across multiple related files in one response. "
                 "Follow dependencies across registered roots and prefer concrete repository names, relative paths and symbols. You are not responsible for editing, staging, hashing, testing, or applying changes."
             )
         else:

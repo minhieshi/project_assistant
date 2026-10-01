@@ -1,6 +1,6 @@
-# Project Assistant v0.8.15 — User Guide
+# Project Assistant v0.8.16 — User Guide
 
-This guide describes the behaviour that is actually implemented in **v0.8.15**. It covers setup, projects and source repositories, indexing and retrieval, conversation persistence and consolidation, local state, MCP credential storage, the CLI, the local API, and troubleshooting.
+This guide describes the behaviour that is actually implemented in **v0.8.16**. It covers setup, projects and source repositories, indexing and retrieval, conversation persistence and consolidation, local state, MCP credential storage, the CLI, the local API, and troubleshooting.
 
 > **MCP status:** v0.8.8 connects authenticated MCP servers to the normal retrieval planner through an explicit local per-server tool allowlist. Only tools you approve in the Connections tab or with `mcp-allow` are exposed to chat retrieval. MCP tool descriptions, schemas and results are treated as untrusted external evidence, and obvious mutation-oriented tool names are blocked locally even if the server labels them read-only.
 
@@ -21,7 +21,7 @@ Its normal execution path does **not** edit registered source repositories or ex
 ```text
 Project Assistant
   understand / retrieve / investigate / design
-  choose substantial implementation units at natural feature/file boundaries
+  retrieve all tightly coupled implementation context needed for the requested change
   author complete code/config/tests for the current coherent unit
                     |
                     v
@@ -96,6 +96,7 @@ The backend reads configuration from environment variables. `.env.example` is a 
 | `PORTKEY_EXTRA_HEADERS_JSON` | Optional JSON object of extra enterprise headers | `{}` |
 | `PORTKEY_API_MODE` | `chat_completions` or `responses` | `chat_completions` |
 | `PORTKEY_REASONING_EFFORT` | `low`, `medium`, or `high` | `high` |
+| `PORTKEY_EMBEDDING_TIMEOUT_SECONDS` | Maximum seconds for one embedding HTTP request | `60` |
 
 Example:
 
@@ -105,6 +106,7 @@ export PORTKEY_API_KEY='...'
 export PORTKEY_CHAT_MODEL='gpt-5.6'
 export PORTKEY_EMBEDDING_MODEL='@bedrock-au/amazon.titan-embed-text-v2:0'
 export PORTKEY_REASONING_EFFORT='high'
+export PORTKEY_EMBEDDING_TIMEOUT_SECONDS='60'
 ```
 
 Test both routes before doing a large index:
@@ -287,7 +289,7 @@ Indexing maintains several complementary stores:
 .assistant/index_status.json        latest indexing status
 ```
 
-Incremental indexing avoids re-embedding unchanged content. Git branch/HEAD metadata can be refreshed independently of content fingerprints.
+Incremental indexing avoids re-embedding unchanged content. v0.8.16 also persists each indexed file's `size + mtime_ns`, so normal unchanged checks do not reread/SHA-256 hash every file on every run. Registered Git sources can use the previously indexed commit plus current committed/staged/unstaged/untracked changes to migrate older manifests to this fast path without hashing every tracked file. Git branch/HEAD metadata can still be refreshed independently of embeddings.
 
 Normal chat/context retrieval can combine:
 
@@ -312,7 +314,9 @@ These operations are restricted to the project and registered source roots and a
 
 ### Indexing status and errors
 
-The UI/API exposes `.assistant/index_status.json`. Full indexing started from the browser is a backend-owned job: the POST returns immediately, status transitions through `queued` → `running` → `completed` (or `failed`), and the browser polls only while the job is active. The status file includes a run ID, owner PID and update timestamp and is written atomically.
+The UI/API exposes `.assistant/index_status.json`. Full indexing started from the browser is a backend-owned job: the POST returns immediately, status transitions through `queued` → `running` → `completed` (or `failed`), and the browser polls only while the job is active. While running, status now reports an explicit phase (`scanning`, `indexing`, `finalising`) plus `processed / total` files; the `chunks` number is only newly indexed chunks and should not be treated as overall progress. The status file includes a run ID, owner PID and update timestamp and is written atomically.
+
+Embedding HTTP calls are bounded by `PORTKEY_EMBEDDING_TIMEOUT_SECONDS` (60 seconds by default). A gateway call that never responds therefore becomes a per-file embedding failure/local-only result rather than holding the entire indexing job in `running` forever.
 
 All indexing writers for one project share the same project-wide lock, including delayed conversation maintenance from older/rebuilt assistant instances. If the API restarts and finds an orphaned `queued`/`running` state with no live owner, it marks that run interrupted rather than leaving the browser polling forever.
 
@@ -330,19 +334,18 @@ Security/egress events can be recorded in:
 
 ### Guided implementation
 
-Use Guided implementation when you want Project Assistant to produce code for you to apply manually. It uses the same project RAG/live-read system as normal chat, but with a stricter implementation contract.
+Use Guided implementation when you want Project Assistant to produce code for you to apply manually. It uses the same project RAG/live-read system as normal chat, but the default delivery contract is now **complete the requested change in the current response whenever practical**.
 
-For a non-trivial new implementation request:
+For a clear implementation request:
 
-1. the retrieval planner locates the likely repositories, files, integration boundaries and tests;
-2. Project Assistant chooses the **largest coherent, reviewable implementation unit** rather than splitting by line count or an arbitrary step count;
-3. a normal unit may be a complete feature slice, whole-file change, complete playbook/set of related playbooks, or a tightly coupled 2–3 file change including required tests/configuration;
-4. when your request clearly says to implement/build/add/fix a well-defined change, it may proceed directly with that complete unit instead of forcing a planning-only stop;
-5. when a material design decision, ambiguity, independent subsystem or validation dependency creates a natural boundary, it presents a concise plan and waits for approval;
-6. before code generation it re-runs implementation retrieval and reads all important target files live;
-7. it produces complete pasteable code for the full approved unit, followed by validation commands/checks.
+1. the retrieval planner locates and live-reads all tightly coupled repositories/files/integration/config/test artefacts needed for the requested behaviour;
+2. it retrieves enough context for the **full requested feature/fix/playbook change**, not merely the next small step;
+3. Project Assistant proceeds directly to complete copy-pasteable implementation code instead of inserting a routine planning/approval pause;
+4. imports, helpers, call sites, configuration, tests and documentation required for the same behaviour remain together;
+5. it stops before implementation only when a material ambiguity would produce incompatible designs, required source cannot be retrieved, or the request is exceptionally large;
+6. after the code it summarises the change and provides validation commands/checks.
 
-Guided mode deliberately avoids micro-steps. Imports, helpers, call sites, configuration, tests and documentation that are required for one behaviour are normally kept together. Older user-memory text that says `smallest viable implementation` does not override this unit-sizing rule.
+The active runtime, retrieval planner, CLI help and browser guidance all use this same contract. Older user-memory text referring to `smallest viable implementation` or incremental micro-steps does not override it.
 
 For each changed artefact, responses should include:
 
@@ -353,7 +356,7 @@ Action: Create file | Replace file | Replace function/class/section | Insert aft
 Why: <short explanation>
 ```
 
-Replacement code should be a complete copy-pasteable unit. Guided mode explicitly forbids placeholders such as `...`, `existing code`, `rest unchanged`, omitted imports or pseudo-code inside replacement blocks. Diffs are only produced when explicitly requested.
+Replacement code should be complete and copy-pasteable. Guided mode forbids placeholders such as `...`, `existing code`, `rest unchanged`, omitted imports or pseudo-code inside replacement blocks. Diffs are only produced when explicitly requested.
 
 The UI has **Copy response** on assistant/event messages and a **Copy** button on fenced code blocks.
 
@@ -371,7 +374,7 @@ CLI example:
 
 ```bash
 project-assistant --project ~/work/context-builder \
-  chat a1b2c3d4e5 "Implement the next step" --guided
+  chat a1b2c3d4e5 "Implement the certificate renewal feature" --guided
 ```
 
 ## 8. Conversation persistence
@@ -1089,7 +1092,7 @@ Guided implementation:
 
 ```bash
 project-assistant --project ~/work/context-builder \
-  chat a1b2c3d4e5 "Implement the next step" --guided
+  chat a1b2c3d4e5 "Implement the certificate renewal feature" --guided
 ```
 
 `--guided` switches retrieval purpose to `implementation`, requires stronger live-file grounding, and adds the adaptive coherent-unit copy-paste code contract to the model prompt. Quote the message in the shell when it contains spaces/shell metacharacters.
@@ -1497,7 +1500,7 @@ cd web
 npm run build
 ```
 
-## 18. Current v0.8.12 limitations / next layer
+## 18. Current v0.8.16 limitations / next layer
 
 Authenticated **tool-based** MCP retrieval is implemented. The remaining MCP work is narrower:
 

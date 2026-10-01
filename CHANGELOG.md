@@ -1,3 +1,16 @@
+# v0.8.16
+
+## 0.8.16 — Workflow consistency + indexing progress/performance
+
+- Replaces remaining active micro-step wording in the retrieval planner, CLI and browser with an end-to-end guided implementation contract.
+- Defaults clear implementation requests to the complete requested feature/fix/playbook change in one response when practical; approval pauses are reserved for genuine ambiguity/missing evidence or exceptionally large work.
+- Makes the UI version badge use the backend `/api/status` version rather than a hard-coded string.
+- Adds explicit index phases plus `processed / total` progress so a stable new-chunk count is not mistaken for a stalled run.
+- Adds `PORTKEY_EMBEDDING_TIMEOUT_SECONDS` (default 60) so one embedding request cannot block an index indefinitely.
+- Persists `size` + `mtime_ns` in index-manifest records and uses them as the normal unchanged-file fast path on subsequent runs.
+- Uses Git commit + working-tree change detection for registered Git source repos to avoid hashing every tracked file while migrating older manifests to the stat-signature fast path.
+- Adds regression tests for unchanged-file no-rehash indexing and configured embedding HTTP timeouts.
+
 # v0.8.15
 
 ## 0.8.15 — Adaptive guided implementation units

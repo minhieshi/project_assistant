@@ -444,7 +444,7 @@ class WebFoundationTests(unittest.TestCase):
     def test_api_app_imports_without_initialising_rag(self):
         from project_assistant.api.app import app
 
-        self.assertEqual(app.version, "0.8.15")
+        self.assertEqual(app.version, "0.8.16")
 
     def test_portkey_url_is_explicit_and_does_not_default_public(self):
         from project_assistant.config import PortkeySettings
@@ -1154,8 +1154,8 @@ class MultiRoundRetrievalTests(unittest.TestCase):
         agent.plan_and_retrieve("implement the next step", "recent plan", [], [], purpose="implementation")
         self.assertIn("GUIDED-IMPLEMENTATION RULES", model.system)
         self.assertIn("read all tightly coupled targets live", model.system.lower())
-        self.assertIn("complete feature slice/file-level change", model.system)
-        self.assertIn("read the important targets live", model.user)
+        self.assertIn("full requested feature/fix/playbook change", model.system)
+        self.assertIn("read the tightly coupled target", model.user)
         self.assertIn("HEAD=abc123", model.user)
 
 
@@ -1190,10 +1190,10 @@ class GuidedImplementationTests(unittest.TestCase):
             _context, system, user = assistant._prepare_answer(conv.id, "Implement the feature", mode="guided")
             self.assertEqual(seen.get("purpose"), "implementation")
             self.assertIn("GUIDED IMPLEMENTATION MODE", system)
-            self.assertIn("largest coherent, reviewable implementation unit", system)
-            self.assertIn("Prefer 1-3 units", system)
-            self.assertIn("proceed directly with the first coherent implementation unit", system)
-            self.assertIn("Never create micro-steps", system)
+            self.assertIn("completing the requested change end-to-end", system)
+            self.assertIn("default to completing the requested change end-to-end", system)
+            self.assertIn("proceed directly to complete copy-pasteable implementation code", system)
+            self.assertIn("Do NOT invent a step-by-step workflow", system)
             self.assertIn("Repository: <registered repository name>", system)
             self.assertIn('Never use placeholders such as "..."', system)
             self.assertIn("live target source", user)
@@ -1784,3 +1784,94 @@ def test_index_status_endpoint_recovers_orphaned_running_job():
         assert status["state"] == "failed"
         assert "interrupted" in (status["last_error"] or "").lower()
         assert IndexStatusStore(status_path).status.state == "failed"
+
+
+class IndexPerformanceRegressionTests(unittest.TestCase):
+    def test_index_changed_uses_stat_fast_path_without_rehashing_unchanged_file(self):
+        import sys
+        import types
+        fake_chroma = types.ModuleType("langchain_chroma")
+        fake_chroma.Chroma = object
+        fake_docs = types.ModuleType("langchain_core.documents")
+        fake_docs.Document = object
+        fake_fitz = types.ModuleType("fitz")
+        with patch.dict(sys.modules, {"langchain_chroma": fake_chroma, "langchain_core.documents": fake_docs, "fitz": fake_fitz}):
+            from project_assistant.indexing import IncrementalIndexer
+        from project_assistant.config import SourceRoot
+        from project_assistant.index_policy import INDEX_POLICY_VERSION
+        from project_assistant.knowledge_graph import GRAPH_INDEX_VERSION
+        from project_assistant.index_status import IndexStatusStore
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source_root = root / "repo"
+            source_root.mkdir()
+            path = source_root / "file.py"
+            path.write_text("print('unchanged')\n", encoding="utf-8")
+            signature = IncrementalIndexer._stat_signature(path)
+            manifest = {
+                str(path.resolve()): {
+                    "fingerprint": "old-content-hash",
+                    "size": signature["size"],
+                    "mtime_ns": signature["mtime_ns"],
+                    "index_policy_version": INDEX_POLICY_VERSION,
+                    "graph_index_version": GRAPH_INDEX_VERSION,
+                    "source": "repo",
+                    "relative_path": "file.py",
+                    "chunk_ids": ["c1"],
+                    "git_branch": "main",
+                    "git_commit": "abc",
+                }
+            }
+
+            idx = object.__new__(IncrementalIndexer)
+            idx.project_dir = root / "project"
+            idx._git_cache = {}
+            idx.status_store = IndexStatusStore(root / "status.json")
+            idx.graph = type("Graph", (), {"remove_source": lambda self, *_: None})()
+            idx.catalog = type("Catalog", (), {"rebuild": lambda self, *_: None})()
+            idx.config = type("Config", (), {"resolved_sources": lambda self, *_: [SourceRoot("repo", str(source_root))]})()
+            idx._all_sources = lambda: [SourceRoot("repo", str(source_root))]
+            idx._iter_candidates = lambda *_args, **_kwargs: [path]
+            idx._embedding_eligibility = lambda *_args: (True, None)
+            idx._relative = lambda p, r: str(p.resolve().relative_to(r.resolve()))
+            idx._load_manifest = lambda: manifest
+            idx._save_manifest = lambda _manifest: None
+            idx._refresh_record_git_metadata = lambda *_args: False
+            idx._refresh_graph = lambda *_args: None
+            idx._delete_manifest_entry = lambda *_args: None
+            idx._fingerprint = lambda *_args: (_ for _ in ()).throw(AssertionError("unchanged file was rehashed"))
+
+            result = IncrementalIndexer.index_changed(idx)
+            self.assertEqual(result["unchanged"], 1)
+            status = IndexStatusStore(root / "status.json").status
+            self.assertEqual(status.state, "completed")
+            self.assertEqual(status.processed, 1)
+            self.assertEqual(status.total, 1)
+
+    def test_portkey_embeddings_apply_configured_http_timeout(self):
+        import json
+        from project_assistant.config import PortkeySettings
+        from project_assistant.portkey import PortkeyEmbeddings
+
+        seen = {}
+
+        class FakeResponse:
+            def __enter__(self): return self
+            def __exit__(self, *_): return False
+            def read(self): return json.dumps({"data": [{"embedding": [0.1]}]}).encode()
+
+        def fake_urlopen(request, timeout=None):
+            seen["timeout"] = timeout
+            return FakeResponse()
+
+        settings = PortkeySettings(
+            base_url="https://gateway.example.invalid/v1",
+            api_key="key",
+            chat_model="gpt-5.6",
+            embedding_model="embed",
+        )
+        with patch("urllib.request.urlopen", fake_urlopen), patch.dict(os.environ, {"PORTKEY_EMBEDDING_TIMEOUT_SECONDS": "12"}, clear=False):
+            vector = PortkeyEmbeddings(settings).embed_query("hello")
+        self.assertEqual(vector, [0.1])
+        self.assertEqual(seen["timeout"], 12.0)

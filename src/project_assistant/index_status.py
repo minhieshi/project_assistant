@@ -37,6 +37,9 @@ class IndexStatus:
     finished_at: str | None = None
     current_repo: str | None = None
     current_file: str | None = None
+    phase: str | None = None
+    processed: int = 0
+    total: int = 0
     scanned: int = 0
     eligible: int = 0
     indexed: int = 0
@@ -83,6 +86,7 @@ class IndexStatusStore:
             pid=os.getpid(),
             updated_at=now,
             started_at=now,
+            phase="queued",
         )
         self.save(force=True)
 
@@ -98,15 +102,29 @@ class IndexStatusStore:
             pid=os.getpid(),
             updated_at=now,
             started_at=started_at,
+            phase="scanning",
         )
         self.save(force=True)
 
     def repo(self, name: str) -> RepoIndexStats:
         return self.status.repos.setdefault(name, RepoIndexStats())
 
+    def set_phase(self, phase: str, *, force: bool = True) -> None:
+        self.status.phase = phase
+        self.save(force=force)
+
+    def set_total(self, total: int) -> None:
+        self.status.total = max(0, int(total))
+        self.status.processed = min(self.status.processed, self.status.total)
+        self.save(force=True)
+
     def current(self, repo: str | None, relative_path: str | None) -> None:
         self.status.current_repo = repo
         self.status.current_file = relative_path
+        self.save()
+
+    def processed_one(self) -> None:
+        self.status.processed += 1
         self.save()
 
     def skipped(self, repo: str, relative_path: str, reason: str) -> None:
@@ -131,6 +149,7 @@ class IndexStatusStore:
         self.status.finished_at = utc_now()
         self.status.current_repo = None
         self.status.current_file = None
+        self.status.phase = "completed"
         self.save(force=True)
 
     def interrupt(self, message: str = "Indexing was interrupted before completion.") -> None:
@@ -142,6 +161,7 @@ class IndexStatusStore:
         self.status.last_error = message
         self.status.current_repo = None
         self.status.current_file = None
+        self.status.phase = "failed"
         self.save(force=True)
 
     def save(self, *, force: bool = False) -> None:

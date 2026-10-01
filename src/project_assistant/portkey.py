@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Iterable, Protocol
+import os
 import re
+import socket
 
 from .config import PortkeySettings
 from .security import EgressPolicy
@@ -126,7 +128,15 @@ class PortkeyEmbeddings:
 
         opener = self.urlopen_override or urlopen
         try:
-            with opener(request) as raw_response:
+            if self.urlopen_override is not None:
+                raw_context = opener(request)
+            else:
+                try:
+                    timeout = max(1.0, float(os.getenv("PORTKEY_EMBEDDING_TIMEOUT_SECONDS", "60")))
+                except ValueError:
+                    timeout = 60.0
+                raw_context = opener(request, timeout=timeout)
+            with raw_context as raw_response:
                 payload = json.loads(raw_response.read().decode("utf-8"))
         except HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace")
@@ -134,6 +144,8 @@ class PortkeyEmbeddings:
             raise RuntimeError(f"Portkey embedding HTTP {exc.code}: {detail}") from exc
         except URLError as exc:
             raise RuntimeError(f"Portkey embedding request failed: {exc.reason}") from exc
+        except (TimeoutError, socket.timeout) as exc:
+            raise RuntimeError("Portkey embedding request timed out") from exc
 
         return self._extract_embedding(payload)
 

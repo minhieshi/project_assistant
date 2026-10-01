@@ -488,7 +488,7 @@ export default function Home() {
   return (
     <div className="app-shell">
       <aside className="sidebar">
-        <div className="brand">Project Assistant <span className="small">v0.8.15</span></div>
+        <div className="brand">Project Assistant <span className="small">v{appStatus?.version ?? "…"}</span></div>
         {appStatus && <div className="notice" style={{ marginBottom: 12 }}>Projects: {appStatus.projects_root}<br />Portkey: {appStatus.portkey.base_url_configured ? "URL configured" : "URL missing"}</div>}
 
         <div className="section-title">Projects</div>
@@ -610,7 +610,7 @@ export default function Home() {
         <ContextPanel context={context} />
 
         <div className="section-title">Guided implementation</div>
-        <div className="notice">Use <strong>Guided implementation</strong> for coding work. Project Assistant will break larger changes into small steps, pause between steps, re-read live source before coding, and return complete copy-pasteable code while keeping repository writes under your control.</div>
+        <div className="notice">Use <strong>Guided implementation</strong> for coding work. Project Assistant will retrieve the tightly coupled live source needed for the requested change and return complete copy-pasteable implementation code in the current response whenever practical, while keeping repository writes under your control.</div>
       </aside>
     </div>
   );
@@ -716,7 +716,7 @@ const Composer = memo(function Composer({ busy, mode, setMode, canApprove, onApp
         onKeyDown={(event) => {
           if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); submit(); }
         }}
-        placeholder={mode === "guided" ? "Describe the change. Larger tasks will be split into small steps and paused for your approval." : "Ask about this project..."}
+        placeholder={mode === "guided" ? "Describe the change. Guided mode will normally implement the complete requested feature/fix in one response." : "Ask about this project..."}
       />
       <div className="composer-actions">
         <div className="row wrap">
@@ -915,14 +915,17 @@ function IndexVisibility({ status }: { status: IndexStatus | null }) {
         <div className="small">State: <strong>{status.state}</strong>{status.finished_at ? ` · ${timeLabel(status.finished_at)}` : ""}</div>
       </div>
       <div className="row wrap">
-        <span className="badge">{status.scanned} scanned</span>
-        <span className="badge">{status.chunks} chunks</span>
+        <span className="badge">{status.total > 0 ? `${status.processed}/${status.total} processed` : `${status.scanned} scanned`}</span>
+        <span className="badge">{status.chunks} new chunks</span>
         <span className="badge">{status.skipped} skipped</span>
         <span className="badge">{status.local_only} local-only</span>
       </div>
     </div>
     {status.state === "queued" && <div className="notice" style={{ marginTop: 10 }}>Index queued — waiting for current index maintenance to finish.</div>}
-    {status.state === "running" && <div className="notice" style={{ marginTop: 10 }}>Indexing {status.current_repo ?? ""}{status.current_file ? ` / ${status.current_file}` : ""}</div>}
+    {status.state === "running" && <div className="notice" style={{ marginTop: 10 }}>
+      {status.phase === "scanning" ? "Scanning index candidates…" : status.phase === "finalising" ? "Finalising index metadata…" : `Indexing ${status.current_repo ?? ""}${status.current_file ? ` / ${status.current_file}` : ""}`}
+      {status.total > 0 ? ` · ${status.processed}/${status.total}` : ""}
+    </div>}
     {status.last_error && <div className="error" style={{ marginTop: 10 }}>{status.last_error}</div>}
     {repoRows.length > 0 && <div style={{ marginTop: 12 }}>
       <div className="small" style={{ marginBottom: 6 }}>Per repository</div>

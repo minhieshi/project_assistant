@@ -52,6 +52,7 @@ class IncrementalIndexer:
         manifest = self._load_manifest()
         current: dict[str, tuple[SourceRoot, Path]] = {}
         try:
+            self.status_store.set_phase("scanning")
             for source in self._all_sources():
                 root = Path(source.path).resolve()
                 if not root.exists():
@@ -76,70 +77,146 @@ class IncrementalIndexer:
                 self._delete_manifest_entry(manifest, source_path)
                 self.graph.remove_source(source_path)
             self.status_store.status.deleted = len(deleted)
+            self.status_store.set_total(len(current))
+            self.status_store.set_phase("indexing")
+
+            # For Git-backed registered sources, use the previous indexed commit plus
+            # current working-tree changes to identify files that are definitely
+            # unchanged. This lets manifests created before v0.8.16 migrate to the
+            # stat-signature fast path without SHA-256 reading every tracked file.
+            git_changed_by_source: dict[str, set[str] | None] = {}
+            for source in self._all_sources():
+                if source.name == "project":
+                    continue
+                records = [record for record in manifest.values() if record.get("source") == source.name]
+                commits = {str(record.get("git_commit")) for record in records if record.get("git_commit")}
+                previous_commit = next(iter(commits)) if len(commits) == 1 else None
+                git_changed_by_source[source.name] = self._git_changed_paths(Path(source.path), previous_commit) if previous_commit else None
 
             added = changed = unchanged = local_only = 0
+            manifest_dirty = bool(deleted)
             for source_path, (source, path) in current.items():
                 rel = self._relative(path, Path(source.path))
                 self.status_store.current(source.name, rel)
-                fingerprint = self._fingerprint(path)
                 record = manifest.get(source_path)
-                if (
-                    record
-                    and record.get("fingerprint") == fingerprint
-                    and record.get("index_policy_version") == INDEX_POLICY_VERSION
-                ):
-                    # Repository state is independent of file content. Refresh
-                    # branch/HEAD metadata even when the file itself is unchanged,
-                    # without re-embedding the source. This handles directories that
-                    # become Git repos after their initial index and normal HEAD moves.
-                    record_changed = self._refresh_record_git_metadata(source, record)
-                    # Graph parser upgrades are local-only. Refresh structural
-                    # relationships without re-embedding unchanged source files.
-                    if record.get("graph_index_version") != GRAPH_INDEX_VERSION:
-                        self._refresh_graph(source, path)
-                        record["graph_index_version"] = GRAPH_INDEX_VERSION
-                        record_changed = True
-                    if record_changed:
-                        manifest[source_path] = record
-                        self._save_manifest(manifest)
-                    unchanged += 1
-                    self.status_store.status.unchanged += 1
-                    self.status_store.repo(source.name).unchanged += 1
-                    continue
-                if record:
-                    self._delete_manifest_entry(manifest, source_path)
-                    self.graph.remove_source(source_path)
-                    changed += 1
-                    self.status_store.status.changed += 1
-                else:
-                    added += 1
-                    self.status_store.status.added += 1
+                stat_signature = self._stat_signature(path)
+                try:
+                    git_changed = git_changed_by_source.get(source.name)
+                    if (
+                        record
+                        and git_changed is not None
+                        and source_path not in git_changed
+                        and record.get("index_policy_version") == INDEX_POLICY_VERSION
+                        and record.get("graph_index_version") == GRAPH_INDEX_VERSION
+                    ):
+                        # Git proves the tracked file has not changed since the
+                        # manifest's indexed commit, including staged/unstaged state.
+                        # Store the stat signature and skip a full-file hash.
+                        record_changed = self._refresh_record_git_metadata(source, record)
+                        if record.get("size") != stat_signature["size"] or record.get("mtime_ns") != stat_signature["mtime_ns"]:
+                            record["size"] = stat_signature["size"]
+                            record["mtime_ns"] = stat_signature["mtime_ns"]
+                            record_changed = True
+                        if record_changed:
+                            manifest[source_path] = record
+                            manifest_dirty = True
+                        unchanged += 1
+                        self.status_store.status.unchanged += 1
+                        self.status_store.repo(source.name).unchanged += 1
+                        continue
 
-                indexed = self._index_one(source, path, fingerprint)
-                manifest[source_path] = indexed
-                self._save_manifest(manifest)
-                repo_stats = self.status_store.repo(source.name)
-                repo_stats.indexed += 1
-                repo_stats.chunks += len(indexed.get("chunk_ids", []))
-                self.status_store.status.indexed += 1
-                self.status_store.status.chunks += len(indexed.get("chunk_ids", []))
-                if not indexed.get("vector_indexed", True):
-                    local_only += 1
-                    if indexed.get("embedding_error"):
-                        reason = "embedding-rejected"
-                    elif indexed.get("egress_blocked"):
-                        reason = "egress-blocked"
-                    elif not indexed.get("chunk_ids"):
-                        reason = "empty"
+                    # Fast path: after one v0.8.16+ successful index, unchanged files
+                    # are identified with a cheap stat() rather than re-reading and
+                    # SHA-256 hashing every byte on every run.
+                    if (
+                        record
+                        and record.get("index_policy_version") == INDEX_POLICY_VERSION
+                        and self._record_stat_matches(record, stat_signature)
+                    ):
+                        record_changed = self._refresh_record_git_metadata(source, record)
+                        if record.get("graph_index_version") != GRAPH_INDEX_VERSION:
+                            self._refresh_graph(source, path)
+                            record["graph_index_version"] = GRAPH_INDEX_VERSION
+                            record_changed = True
+                        if record_changed:
+                            manifest[source_path] = record
+                            manifest_dirty = True
+                        unchanged += 1
+                        self.status_store.status.unchanged += 1
+                        self.status_store.repo(source.name).unchanged += 1
+                        continue
+
+                    fingerprint = self._fingerprint(path)
+                    if (
+                        record
+                        and record.get("fingerprint") == fingerprint
+                        and record.get("index_policy_version") == INDEX_POLICY_VERSION
+                    ):
+                        # Migration/metadata path for pre-v0.8.16 manifests or files
+                        # whose mtime changed without content changes. Persist the stat
+                        # signature so subsequent runs can take the fast path.
+                        record_changed = self._refresh_record_git_metadata(source, record)
+                        if record.get("graph_index_version") != GRAPH_INDEX_VERSION:
+                            self._refresh_graph(source, path)
+                            record["graph_index_version"] = GRAPH_INDEX_VERSION
+                            record_changed = True
+                        if record.get("size") != stat_signature["size"] or record.get("mtime_ns") != stat_signature["mtime_ns"]:
+                            record["size"] = stat_signature["size"]
+                            record["mtime_ns"] = stat_signature["mtime_ns"]
+                            record_changed = True
+                        if record_changed:
+                            manifest[source_path] = record
+                            manifest_dirty = True
+                        unchanged += 1
+                        self.status_store.status.unchanged += 1
+                        self.status_store.repo(source.name).unchanged += 1
+                        continue
+
+                    if record:
+                        self._delete_manifest_entry(manifest, source_path)
+                        self.graph.remove_source(source_path)
+                        changed += 1
+                        self.status_store.status.changed += 1
                     else:
-                        reason = "local-only"
-                    self.status_store.local_only(source.name, rel, reason)
-                self.status_store.save()
+                        added += 1
+                        self.status_store.status.added += 1
 
-            self._save_manifest(manifest)
+                    indexed = self._index_one(source, path, fingerprint, stat_signature=stat_signature)
+                    manifest[source_path] = indexed
+                    manifest_dirty = True
+                    repo_stats = self.status_store.repo(source.name)
+                    repo_stats.indexed += 1
+                    repo_stats.chunks += len(indexed.get("chunk_ids", []))
+                    self.status_store.status.indexed += 1
+                    self.status_store.status.chunks += len(indexed.get("chunk_ids", []))
+                    if not indexed.get("vector_indexed", True):
+                        local_only += 1
+                        if indexed.get("embedding_error"):
+                            reason = "embedding-rejected"
+                        elif indexed.get("egress_blocked"):
+                            reason = "egress-blocked"
+                        elif not indexed.get("chunk_ids"):
+                            reason = "empty"
+                        else:
+                            reason = "local-only"
+                        self.status_store.local_only(source.name, rel, reason)
+                finally:
+                    self.status_store.processed_one()
+
+            self.status_store.set_phase("finalising")
+            if manifest_dirty:
+                self._save_manifest(manifest)
             self.catalog.rebuild(self.config.resolved_sources(self.project_dir), manifest)
             self.status_store.finish()
-            return {"added": added, "changed": changed, "deleted": len(deleted), "unchanged": unchanged, "local_only": local_only, "skipped": self.status_store.status.skipped, "chunks": self.status_store.status.chunks}
+            return {
+                "added": added,
+                "changed": changed,
+                "deleted": len(deleted),
+                "unchanged": unchanged,
+                "local_only": local_only,
+                "skipped": self.status_store.status.skipped,
+                "chunks": self.status_store.status.chunks,
+            }
         except Exception as exc:
             self.status_store.fail(f"{type(exc).__name__}: {exc}")
             raise
@@ -157,9 +234,13 @@ class IncrementalIndexer:
             self.graph.remove_source(key)
             self._save_manifest(manifest)
             return
-        fingerprint = self._fingerprint(path)
+        stat_signature = self._stat_signature(path)
         existing = manifest.get(key, {})
-        if existing.get("fingerprint") == fingerprint and existing.get("index_policy_version") == INDEX_POLICY_VERSION:
+        if (
+            existing
+            and existing.get("index_policy_version") == INDEX_POLICY_VERSION
+            and self._record_stat_matches(existing, stat_signature)
+        ):
             record_changed = self._refresh_record_git_metadata(source, existing)
             if existing.get("graph_index_version") != GRAPH_INDEX_VERSION:
                 self._refresh_graph(source, path)
@@ -169,10 +250,26 @@ class IncrementalIndexer:
                 manifest[key] = existing
                 self._save_manifest(manifest)
             return
+
+        fingerprint = self._fingerprint(path)
+        if existing.get("fingerprint") == fingerprint and existing.get("index_policy_version") == INDEX_POLICY_VERSION:
+            record_changed = self._refresh_record_git_metadata(source, existing)
+            if existing.get("graph_index_version") != GRAPH_INDEX_VERSION:
+                self._refresh_graph(source, path)
+                existing["graph_index_version"] = GRAPH_INDEX_VERSION
+                record_changed = True
+            if existing.get("size") != stat_signature["size"] or existing.get("mtime_ns") != stat_signature["mtime_ns"]:
+                existing["size"] = stat_signature["size"]
+                existing["mtime_ns"] = stat_signature["mtime_ns"]
+                record_changed = True
+            if record_changed:
+                manifest[key] = existing
+                self._save_manifest(manifest)
+            return
         if key in manifest:
             self._delete_manifest_entry(manifest, key)
             self.graph.remove_source(key)
-        manifest[key] = self._index_one(source, path, fingerprint)
+        manifest[key] = self._index_one(source, path, fingerprint, stat_signature=stat_signature)
         self._save_manifest(manifest)
         self.catalog.rebuild(self.config.resolved_sources(self.project_dir), manifest)
 
@@ -337,7 +434,7 @@ class IncrementalIndexer:
     def _embedding_eligibility(self, path: Path, root: Path) -> tuple[bool, str | None]:
         return self.file_policy.classify(path)
 
-    def _index_one(self, source: SourceRoot, path: Path, fingerprint: str) -> dict:
+    def _index_one(self, source: SourceRoot, path: Path, fingerprint: str, *, stat_signature: dict[str, int] | None = None) -> dict:
         docs = self._load_documents(source, path)
         chunk_ids: list[str] = []
         for i, chunk in enumerate(docs):
@@ -386,8 +483,11 @@ class IncrementalIndexer:
         self._refresh_graph(source, path)
 
         git = self._git_metadata(Path(source.path)) if source.name != "project" else {"branch": None, "commit": None}
+        stat_signature = stat_signature or self._stat_signature(path)
         return {
             "fingerprint": fingerprint,
+            "size": stat_signature["size"],
+            "mtime_ns": stat_signature["mtime_ns"],
             "index_policy_version": INDEX_POLICY_VERSION,
             "graph_index_version": GRAPH_INDEX_VERSION,
             "chunk_ids": chunk_ids,
@@ -522,6 +622,39 @@ class IncrementalIndexer:
         except (subprocess.CalledProcessError, FileNotFoundError, ValueError):
             return None
 
+    def _git_changed_paths(self, root: Path, previous_commit: str | None) -> set[str] | None:
+        if not previous_commit:
+            return None
+        try:
+            root = root.resolve()
+            git_root = Path(subprocess.run(
+                ["git", "-C", str(root), "rev-parse", "--show-toplevel"],
+                check=True, capture_output=True, text=True,
+            ).stdout.strip()).resolve()
+            prefix = str(root.relative_to(git_root)) if root != git_root else "."
+            pathspec = [] if prefix == "." else ["--", prefix]
+            commands = [
+                ["git", "-C", str(git_root), "diff", "--name-only", "-z", previous_commit, "HEAD", *pathspec],
+                ["git", "-C", str(git_root), "diff", "--name-only", "-z", *pathspec],
+                ["git", "-C", str(git_root), "diff", "--cached", "--name-only", "-z", *pathspec],
+                ["git", "-C", str(git_root), "ls-files", "--others", "--exclude-standard", "-z", *pathspec],
+            ]
+            changed: set[str] = set()
+            for command in commands:
+                raw = subprocess.run(command, check=True, capture_output=True).stdout
+                for item in raw.decode("utf-8", errors="surrogateescape").split("\0"):
+                    if not item:
+                        continue
+                    candidate = (git_root / item).resolve()
+                    try:
+                        candidate.relative_to(root)
+                    except ValueError:
+                        continue
+                    changed.add(str(candidate))
+            return changed
+        except (subprocess.CalledProcessError, FileNotFoundError, ValueError):
+            return None
+
     def _git_metadata(self, root: Path) -> dict[str, str | None]:
         key = str(root.resolve())
         if key in self._git_cache:
@@ -545,6 +678,15 @@ class IncrementalIndexer:
             return str(path.resolve().relative_to(root.resolve()))
         except ValueError:
             return path.name
+
+    @staticmethod
+    def _stat_signature(path: Path) -> dict[str, int]:
+        stat = path.stat()
+        return {"size": int(stat.st_size), "mtime_ns": int(stat.st_mtime_ns)}
+
+    @staticmethod
+    def _record_stat_matches(record: dict, signature: dict[str, int]) -> bool:
+        return record.get("size") == signature["size"] and record.get("mtime_ns") == signature["mtime_ns"]
 
     @staticmethod
     def _fingerprint(path: Path) -> str:

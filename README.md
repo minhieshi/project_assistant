@@ -1,4 +1,4 @@
-# Local Project Assistant — v0.8.15
+# Local Project Assistant — v0.8.16
 
 Project Assistant recreates the useful parts of the enterprise ChatGPT browser experience locally while using approved Portkey routes for GPT-5.6 inference and embeddings. It keeps persistent project conversations, indexes multiple repositories, compiles high-signal project context, maintains consolidated user/project memory, and can produce source-grounded **copy-pasteable implementation code** without writing to registered source repositories itself.
 
@@ -7,8 +7,8 @@ Its boundary is deliberate:
 ```text
 Project Assistant
   understand / retrieve / investigate / design
-  choose substantial implementation units at natural feature/file boundaries
-  author complete code/config/tests for the current coherent unit
+  retrieve all tightly coupled implementation context
+  author the complete requested change in the current response when practical
                     |
                     v
                   Human
@@ -20,6 +20,12 @@ Registered source repositories remain read-only to Project Assistant. It does no
 ## User guide
 
 For installation, environment variables, project/source management, **guided implementation**, conversation consolidation and memory locations, MCP configuration/authentication, the complete CLI/API reference, persistent-state layout and troubleshooting, see **[`docs/USER_GUIDE.md`](docs/USER_GUIDE.md)**.
+
+## v0.8.16 — Workflow consistency + indexing progress/performance
+
+v0.8.16 fixes two issues found by auditing the packaged v0.8.15 source rather than relying on intended behaviour. Guided mode now uses the same end-to-end delivery contract in the system prompt, retrieval planner, CLI help and browser copy: clear implementation requests should normally produce the complete requested feature/fix/playbook change in the current response, without invented micro-steps or routine approval pauses. The browser version badge is now read from the live backend status instead of being hard-coded.
+
+Indexing now reports real `processed / total` progress and explicit scanning/indexing/finalising phases. Embedding HTTP calls have a configurable timeout (`PORTKEY_EMBEDDING_TIMEOUT_SECONDS`, default 60 seconds) so one stalled gateway request cannot leave a run apparently frozen forever. Successful indexes persist `size + mtime_ns` file signatures, allowing later unchanged-file checks to avoid rereading/SHA-256 hashing every file; Git-backed registered sources can also use the previously indexed commit plus current Git changes to migrate to this fast path without hashing every tracked file.
 
 ## v0.8.15 — Adaptive guided implementation units
 
