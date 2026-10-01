@@ -1,6 +1,6 @@
 [project]
 name = "local-project-assistant"
-version = "0.8.12"
+version = "0.8.15"
 description = "Local-first read-only project intelligence with authenticated Next.js/FastAPI UI, iterative multi-repo RAG, knowledge graph, live source retrieval, guided copy-paste code generation and authenticated MCP connectivity and a read-only Zowe MCP server"
 requires-python = ">=3.11"
 dependencies = [

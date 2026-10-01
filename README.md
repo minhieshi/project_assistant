@@ -1,4 +1,4 @@
-# Local Project Assistant — v0.8.12
+# Local Project Assistant — v0.8.15
 
 Project Assistant recreates the useful parts of the enterprise ChatGPT browser experience locally while using approved Portkey routes for GPT-5.6 inference and embeddings. It keeps persistent project conversations, indexes multiple repositories, compiles high-signal project context, maintains consolidated user/project memory, and can produce source-grounded **copy-pasteable implementation code** without writing to registered source repositories itself.
 
@@ -7,8 +7,8 @@ Its boundary is deliberate:
 ```text
 Project Assistant
   understand / retrieve / investigate / design
-  break larger changes into small implementation steps
-  author complete code/config/tests for the current step
+  choose substantial implementation units at natural feature/file boundaries
+  author complete code/config/tests for the current coherent unit
                     |
                     v
                   Human
@@ -20,6 +20,26 @@ Registered source repositories remain read-only to Project Assistant. It does no
 ## User guide
 
 For installation, environment variables, project/source management, **guided implementation**, conversation consolidation and memory locations, MCP configuration/authentication, the complete CLI/API reference, persistent-state layout and troubleshooting, see **[`docs/USER_GUIDE.md`](docs/USER_GUIDE.md)**.
+
+## v0.8.15 — Adaptive guided implementation units
+
+v0.8.15 removes the overly granular guided-workflow rule that forced non-trivial work into `2–6 small steps` and then emitted only one tiny step per approval. Guided mode now optimises for the **largest coherent, reviewable implementation unit**: typically a complete feature slice, whole file change, complete playbook/set of related playbooks, or a tightly coupled 2–3 file change including required tests/configuration.
+
+Clear implementation requests can proceed directly to code for the first coherent unit instead of inserting a planning-only stop. Work is split only at natural boundaries such as independent subsystems, material design decisions, required validation between stages, or an otherwise unwieldy response. Coupled imports/helpers/call-sites/tests are kept together rather than becoming separate micro-steps.
+
+The guided prompt explicitly overrides older consolidated-memory preferences that may mention the `smallest viable implementation`; memory consolidation guidance is also updated so future preferences distinguish **simple architecture** from **tiny implementation increments**.
+
+## v0.8.14 — Reliable background full-index lifecycle
+
+v0.8.14 fixes a stale `running` index-status failure that could leave the Project tab polling forever after indexing had stopped making progress. Full project indexing is now owned by a backend job coordinator rather than by the lifetime of the HTTP request that started it. Pressing **Reindex changed files** returns immediately with a persisted `queued` state; the UI polls only while the state is `queued` or `running` and stops automatically on `completed` or `failed`.
+
+All assistant instances for the same project now share one project-wide index lock, including instances created after config invalidation/rebuild. This prevents delayed conversation indexing from an older assistant instance racing a manual full index against the same Chroma collection, manifest, graph and lexical index. Index status writes are atomic and include a run ID, owner PID and update timestamp. After a backend crash/restart, an orphaned `queued`/`running` status is converted to an interrupted failure instead of remaining permanently active.
+
+## v0.8.13 — Interactive completion before indexing
+
+v0.8.13 makes the persisted/rendered assistant reply the true end of an interactive turn. The browser clears **Working…** as soon as the final SSE `done` frame arrives, and the backend releases the same-conversation run lease before sending that frame, so the user can immediately continue in the same conversation while maintenance catches up.
+
+Conversation re-indexing is now debounced (10 seconds by default) and coalesced per conversation file, avoiding a queue of redundant full-conversation re-index jobs during rapid back-and-forth chat. Sidebar conversation-list refresh is also detached from the send critical path. Configure the delay with `PROJECT_ASSISTANT_CONVERSATION_INDEX_DELAY_SECONDS`; set it to `0` to restore immediate background scheduling.
 
 ## v0.8.12 — Fast final render + conversation navigation polish
 
@@ -67,12 +87,12 @@ The composer now has two modes:
 For a non-trivial coding request, Guided implementation:
 
 1. performs conversation-aware RAG plus bounded live read-only exploration;
-2. breaks the work into 2–6 small coherent steps;
-3. explains the approach and stops before implementation code;
-4. waits for the user to confirm the next step;
-5. re-reads the relevant live source for that turn;
-6. emits complete copy-pasteable code for **one step only**;
-7. gives validation commands/checks and stops again for user input.
+2. chooses the largest coherent reviewable unit instead of an arbitrary number of small steps;
+3. keeps tightly coupled file/config/test changes together;
+4. proceeds directly when the user clearly asked to implement a well-defined change;
+5. pauses for approval only when a material design decision, ambiguity or natural stage boundary requires it;
+6. re-reads all relevant live source for the current unit;
+7. emits complete copy-pasteable code for the full coherent unit and validation commands.
 
 For each changed artefact, the model is instructed to state:
 

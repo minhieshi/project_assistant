@@ -12,6 +12,7 @@ if TYPE_CHECKING:
 
 registry = WorkspaceRegistry()
 _assistants: dict[str, "ProjectAssistant"] = {}
+_index_locks: dict[str, Lock] = {}
 _lock = Lock()
 
 
@@ -27,8 +28,9 @@ def assistant_for(project_id: str, *, refresh: bool = False) -> "ProjectAssistan
     path = project_path(project_id)
     key = str(path)
     with _lock:
+        index_lock = _index_locks.setdefault(key, Lock())
         if refresh or key not in _assistants:
-            _assistants[key] = ProjectAssistant.build(path)
+            _assistants[key] = ProjectAssistant.build(path, index_lock=index_lock)
         return _assistants[key]
 
 

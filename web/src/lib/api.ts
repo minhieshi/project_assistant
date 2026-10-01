@@ -49,7 +49,7 @@ export const api = {
   convertProjectToSource: (id: string, targetProjectId: string, sourceName?: string) => request<ProjectConversion>(`/projects/${id}/convert-to-source`, { method: "POST", body: JSON.stringify({ target_project_id: targetProjectId, source_name: sourceName || null }) }),
   addSource: (id: string, path: string, name?: string) => request<Project>(`/projects/${id}/sources`, { method: "POST", body: JSON.stringify({ path, name: name || null }) }),
   removeSource: (id: string, name: string) => request<Project>(`/projects/${id}/sources/${encodeURIComponent(name)}`, { method: "DELETE" }),
-  indexProject: (id: string) => request<Record<string, number>>(`/projects/${id}/index`, { method: "POST" }),
+  indexProject: (id: string) => request<{ accepted: boolean; state: string }>(`/projects/${id}/index`, { method: "POST" }),
   indexStatus: (id: string) => request<IndexStatus>(`/projects/${id}/index-status`),
   conversations: (id: string) => request<ConversationSummary[]>(`/projects/${id}/conversations`),
   createConversation: (id: string, title: string) => request<ConversationSummary>(`/projects/${id}/conversations`, { method: "POST", body: JSON.stringify({ title }) }),
@@ -99,7 +99,14 @@ export async function streamChat(projectId: string, conversationId: string, mess
       const payload = JSON.parse(data);
       if (event === "context") callbacks.onContext?.(payload as ContextSummary);
       if (event === "delta") callbacks.onDelta?.(payload.text ?? "");
-      if (event === "done") callbacks.onDone?.(payload.entry as ConversationEntry | undefined);
+      if (event === "done") {
+        callbacks.onDone?.(payload.entry as ConversationEntry | undefined);
+        // `done` is the interactive completion boundary. The persisted assistant
+        // entry has arrived, so do not keep the composer blocked waiting for the
+        // HTTP stream to close or for unrelated background maintenance.
+        void reader.cancel().catch(() => undefined);
+        return;
+      }
       if (event === "error") throw new Error(payload.message ?? "Unknown stream error");
     }
   }

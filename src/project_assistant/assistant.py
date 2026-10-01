@@ -4,7 +4,7 @@ import os
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
-from threading import Lock
+from threading import Lock, Timer
 
 from .config import PortkeySettings, ProjectConfig
 from .context_compiler import ContextCompiler
@@ -40,17 +40,23 @@ GUIDED_IMPLEMENTATION = """
 GUIDED IMPLEMENTATION MODE — HUMAN-APPLIED CHANGES
 Your job is to recreate a high-quality GPT coding conversation while the application itself remains read-only.
 
-WORKFLOW
-1. For a new non-trivial implementation request, first understand enough of the whole task to break it into 2-6 small, coherent steps.
-2. Explain the overall approach and why the first step comes first.
-3. STOP before writing implementation code. Ask the user to confirm the first step or choose a different step.
-4. When the user explicitly confirms (for example: "yes", "do step 1", "next", "implement it" in the context of an already-agreed plan), implement ONE step only.
-5. Before implementing that step, rely on the live source retrieved for this turn. Do not assume files are unchanged merely because they appeared earlier in the conversation.
-6. After emitting the code for that step, explain what changed, give validation commands/checks, and STOP for user input before moving to the next step.
-7. If the user pastes an error or asks for a correction, fix the current step before advancing.
+ADAPTIVE IMPLEMENTATION UNITS
+- Optimise for momentum: use the largest coherent, reviewable implementation unit that the user can reasonably copy-paste and validate in one pass.
+- Do NOT split work to satisfy an arbitrary step count, line count, or "smallest possible change" preference.
+- A normal implementation unit may be a complete feature slice, one complete playbook, a related set of playbooks, a whole file change, or a tightly coupled 2-3 file change including its tests/configuration.
+- Keep logically coupled edits together. Imports, helpers, call sites, configuration, tests and documentation that are required for the same behaviour belong in the same unit when practical.
+- Never create micro-steps for a few lines of code when those lines only make sense as part of a larger coherent change.
+- Split only at natural boundaries: independently testable subsystems, a material design choice that needs user input, a dependency on validation from the previous unit, or a response so large that it would be difficult to apply/review safely.
+- This adaptive unit-sizing rule overrides older conversation/user-memory preferences that may say to prefer the "smallest viable implementation" or highly incremental micro-steps.
 
-SMALL TASK EXCEPTION
-- A genuinely small, self-contained change that is clearly one atomic step may be implemented immediately when the user explicitly asks for the code. Still explain the change briefly and keep the response scoped to that one step.
+WORKFLOW
+1. For a new implementation request, understand the whole task and decide whether it is best handled as one coherent implementation unit or a small number of substantial units. Prefer 1-3 units; one unit is ideal when the work is tightly coupled.
+2. If the task is clear and the user explicitly asked to implement/build/add/fix it now, proceed directly with the first coherent implementation unit instead of inserting a planning-only approval stop.
+3. If a material design choice, ambiguity, or genuinely broad scope needs user input, present a concise plan using natural implementation units and STOP for approval.
+4. When the user approves or asks for the next unit, implement the full approved unit—not a tiny sub-step.
+5. Before generating code, rely on the live source retrieved for this turn. Do not assume files are unchanged merely because they appeared earlier in the conversation.
+6. After emitting the code for the unit, explain what changed and give validation commands/checks. If the entire requested feature is complete, say so. If substantial units remain, identify the next natural unit without subdividing it further unless necessary.
+7. If the user pastes an error or asks for a correction, fix the current implementation unit before advancing.
 
 COPY-PASTE CODE CONTRACT
 For every changed artefact, state:
@@ -63,7 +69,7 @@ Then provide code that can actually be pasted:
 - New file: provide the complete file.
 - Small/medium existing file: prefer the complete replacement file when practical.
 - Large existing file: provide a complete replacement function, class or contiguous section and an exact stable anchor.
-- If one atomic step necessarily spans several files, include every file required for that step.
+- If one coherent implementation unit spans several files, include every file required for that unit.
 - Never use placeholders such as "...", "existing code", "rest unchanged", pseudo-code, or omitted imports inside a replacement block.
 - Never emit a diff unless the user explicitly asks for a diff.
 - Preserve project style and existing interfaces unless the requested change requires otherwise.
@@ -95,9 +101,11 @@ class ProjectAssistant:
         default_factory=lambda: ThreadPoolExecutor(max_workers=1, thread_name_prefix="project-assistant-index"),
         repr=False,
     )
+    _index_debounce_lock: Lock = field(default_factory=Lock, repr=False)
+    _index_timers: dict[str, Timer] = field(default_factory=dict, repr=False)
 
     @classmethod
-    def build(cls, project_dir: Path, model: ChatModel | None = None, embedding_function=None) -> "ProjectAssistant":
+    def build(cls, project_dir: Path, model: ChatModel | None = None, embedding_function=None, index_lock: Lock | None = None) -> "ProjectAssistant":
         project_dir = project_dir.resolve()
         config = ProjectConfig.load(project_dir)
         settings = PortkeySettings.from_env()
@@ -119,7 +127,7 @@ class ProjectAssistant:
         chat_model = model or PortkeyChatModel(settings)
         toolkit = RetrievalToolkit(project_dir, config, indexer, graph)
         retrieval_agent = RetrievalAgent(chat_model, toolkit)
-        index_lock = Lock()
+        index_lock = index_lock or Lock()
 
         def index_file_serialized(path: Path) -> None:
             with index_lock:
@@ -285,6 +293,52 @@ class ProjectAssistant:
         return self._live_git_state_all_sources()
 
     def _schedule_index(self, path: Path) -> None:
+        """Debounce conversation re-indexing off the interactive response path.
+
+        Rapid turns in the same conversation should not queue a full re-index for
+        every assistant response. The Markdown file is already durable and the
+        current conversation is read directly for follow-up turns, so a short
+        catch-up delay is safe and keeps chat responsive.
+        """
+        try:
+            delay = max(0.0, float(os.getenv("PROJECT_ASSISTANT_CONVERSATION_INDEX_DELAY_SECONDS", "10")))
+        except ValueError:
+            delay = 10.0
+        if delay <= 0:
+            self._submit_index(path)
+            return
+
+        # Lazily initialise too, which keeps this helper safe for lightweight test
+        # doubles and assistants restored from older process state.
+        debounce_lock = getattr(self, "_index_debounce_lock", None)
+        if debounce_lock is None:
+            debounce_lock = Lock()
+            self._index_debounce_lock = debounce_lock
+        timers = getattr(self, "_index_timers", None)
+        if timers is None:
+            timers = {}
+            self._index_timers = timers
+
+        resolved = path.resolve()
+        key = str(resolved)
+
+        def fire() -> None:
+            with debounce_lock:
+                if timers.get(key) is not timer:
+                    return
+                timers.pop(key, None)
+            self._submit_index(resolved)
+
+        timer = Timer(delay, fire)
+        timer.daemon = True
+        with debounce_lock:
+            previous = timers.get(key)
+            if previous is not None:
+                previous.cancel()
+            timers[key] = timer
+        timer.start()
+
+    def _submit_index(self, path: Path) -> None:
         try:
             self._index_executor.submit(self._safe_index, path)
         except RuntimeError:

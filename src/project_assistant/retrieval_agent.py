@@ -344,8 +344,8 @@ class RetrievalAgent:
             )
         elif purpose == "implementation":
             purpose_rules = (
-                " GUIDED-IMPLEMENTATION RULES: Locate the exact files, symbols, integration/configuration boundaries and tests needed for the next implementation step. "
-                "Read likely target files live before declaring sufficient, even when indexed snippets exist, because the final model may emit copy-pasteable replacement code. "
+                " GUIDED-IMPLEMENTATION RULES: Locate the exact files, symbols, integration/configuration boundaries and tests needed for the next coherent implementation unit. "
+                "Retrieve enough context to implement a complete feature slice/file-level change rather than a few-line micro-step. Read all tightly coupled targets live before declaring sufficient, even when indexed snippets exist, because the final model may emit copy-pasteable replacement code across multiple related files. "
                 "Follow dependencies across registered roots and prefer concrete repository names, relative paths and symbols. You are not responsible for editing, staging, hashing, testing, or applying changes."
             )
         else:

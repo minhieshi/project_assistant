@@ -1,6 +1,6 @@
 {
   "name": "project-assistant-web",
-  "version": "0.8.12",
+  "version": "0.8.15",
   "private": true,
   "scripts": {
     "dev": "next dev -H 127.0.0.1 -p 3000",

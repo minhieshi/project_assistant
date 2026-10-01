@@ -177,6 +177,15 @@ export default function Home() {
   }, [projectId, conversationId, loadConversation]);
 
   useEffect(() => {
+    if (!projectId || !indexStatus || !["queued", "running"].includes(indexStatus.state)) return;
+    const pid = projectId;
+    const timer = window.setInterval(() => {
+      void loadIndexStatus(pid).catch(() => undefined);
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [projectId, indexStatus?.state, loadIndexStatus]);
+
+  useEffect(() => {
     setContext(conversationRuns[conversationId]?.context ?? null);
   }, [conversationId]);
 
@@ -248,6 +257,7 @@ export default function Home() {
 
     let pendingDelta = "";
     let completedEntry: ConversationEntry | undefined;
+    let interactiveDone = false;
     let flushTimer: number | null = null;
     const flushStreaming = () => {
       flushTimer = null;
@@ -257,6 +267,25 @@ export default function Home() {
       setConversationRuns((current) => ({
         ...current,
         [cid]: { ...(current[cid] ?? { busy: true, text: "" }), text: (current[cid]?.text ?? "") + chunk },
+      }));
+    };
+
+    const finishInteractiveResponse = (entry?: ConversationEntry) => {
+      if (interactiveDone) return;
+      interactiveDone = true;
+      completedEntry = entry;
+      if (flushTimer !== null) {
+        window.clearTimeout(flushTimer);
+        flushTimer = null;
+      }
+      flushStreaming();
+
+      if (entry && selectedProjectRef.current === pid && selectedConversationRef.current === cid) {
+        setConversation((current) => appendCompletedEntry(current, cid, entry));
+      }
+      setConversationRuns((current) => ({
+        ...current,
+        [cid]: { ...(current[cid] ?? { busy: false, text: "" }), busy: false, text: "", error: undefined },
       }));
     };
 
@@ -277,31 +306,18 @@ export default function Home() {
           pendingDelta += delta;
           if (flushTimer === null) flushTimer = window.setTimeout(flushStreaming, 50);
         },
-        onDone: (entry) => {
-          completedEntry = entry;
-        },
+        onDone: (entry) => finishInteractiveResponse(entry),
       });
-      if (flushTimer !== null) window.clearTimeout(flushTimer);
-      flushStreaming();
 
-      // The final SSE frame contains the exact assistant entry that was persisted
-      // by the backend. Render only that new Markdown message instead of immediately
-      // refetching/reparsing the entire conversation history.
-      if (completedEntry && selectedProjectRef.current === pid && selectedConversationRef.current === cid) {
-        setConversation((current) => appendCompletedEntry(current, cid, completedEntry!));
-      }
-      setConversationRuns((current) => ({
-        ...current,
-        [cid]: { ...(current[cid] ?? { busy: false, text: "" }), busy: false, text: "", error: undefined },
-      }));
+      // Newer servers complete the interactive turn at the SSE `done` frame. Keep
+      // this fallback for older/malformed streams that simply close.
+      if (!interactiveDone) finishInteractiveResponse(completedEntry);
 
-      // Conversation summaries are cheap and keep ordering/updated timestamps fresh.
-      // Fall back to a detail reload only for older/malformed streams that did not
-      // supply the persisted assistant entry.
       if (!completedEntry && selectedProjectRef.current === pid && selectedConversationRef.current === cid) {
-        await loadConversation(pid, cid);
+        void loadConversation(pid, cid).catch(() => undefined);
       }
-      await loadConversations(pid);
+      // Updating sidebar timestamps/order is maintenance, not part of chat latency.
+      void loadConversations(pid).catch(() => undefined);
     } catch (e) {
       if (flushTimer !== null) window.clearTimeout(flushTimer);
       flushStreaming();
@@ -311,7 +327,7 @@ export default function Home() {
         [cid]: { ...(current[cid] ?? { busy: false, text: "" }), busy: false, error: message },
       }));
       if (selectedProjectRef.current === pid && selectedConversationRef.current === cid) setError(message);
-      await loadConversation(pid, cid).catch(() => undefined);
+      void loadConversation(pid, cid).catch(() => undefined);
     }
   }, [conversationId, conversationRuns, loadConversation, loadConversations, projectId]);
 
@@ -392,7 +408,6 @@ export default function Home() {
     if (!projectId) return;
     setBusy(true); setError("");
     const pid = projectId;
-    const poll = window.setInterval(() => { void loadIndexStatus(pid).catch(() => undefined); }, 700);
     try {
       await api.indexProject(pid);
       await loadIndexStatus(pid);
@@ -400,7 +415,9 @@ export default function Home() {
       setError(String(e));
       await loadIndexStatus(pid).catch(() => undefined);
     } finally {
-      window.clearInterval(poll);
+      // Starting the job is the only foreground operation. The persisted index
+      // status owns the lifecycle from here and the polling effect stops itself
+      // when a terminal state is observed.
       setBusy(false);
     }
   }
@@ -471,7 +488,7 @@ export default function Home() {
   return (
     <div className="app-shell">
       <aside className="sidebar">
-        <div className="brand">Project Assistant <span className="small">v0.8.12</span></div>
+        <div className="brand">Project Assistant <span className="small">v0.8.15</span></div>
         {appStatus && <div className="notice" style={{ marginBottom: 12 }}>Projects: {appStatus.projects_root}<br />Portkey: {appStatus.portkey.base_url_configured ? "URL configured" : "URL missing"}</div>}
 
         <div className="section-title">Projects</div>
@@ -829,6 +846,7 @@ function ProjectPanel(props: {
 }) {
   const { project } = props;
   if (!project) return <div className="empty">Select a project.</div>;
+  const indexActive = props.indexStatus?.state === "queued" || props.indexStatus?.state === "running";
   const conversionTargets = props.projects.filter((item) => item.id !== project.id);
   return <section className="chat-scroll">
     <h2 style={{ marginTop: 0 }}>Project</h2>
@@ -867,7 +885,7 @@ function ProjectPanel(props: {
       </div>}
     </div>
 
-    <div className="row" style={{ justifyContent: "space-between", marginTop: 24 }}><h3>Source repositories</h3><button className="btn" onClick={props.indexProject} disabled={props.busy}>Reindex changed files</button></div>
+    <div className="row" style={{ justifyContent: "space-between", marginTop: 24 }}><h3>Source repositories</h3><button className="btn" onClick={props.indexProject} disabled={props.busy || indexActive}>{indexActive ? "Indexing…" : "Reindex changed files"}</button></div>
     <IndexVisibility status={props.indexStatus} />
     <div className="source-list">
       {project.sources.length === 0 && <div className="notice">No external source repos registered yet.</div>}
@@ -903,6 +921,7 @@ function IndexVisibility({ status }: { status: IndexStatus | null }) {
         <span className="badge">{status.local_only} local-only</span>
       </div>
     </div>
+    {status.state === "queued" && <div className="notice" style={{ marginTop: 10 }}>Index queued — waiting for current index maintenance to finish.</div>}
     {status.state === "running" && <div className="notice" style={{ marginTop: 10 }}>Indexing {status.current_repo ?? ""}{status.current_file ? ` / ${status.current_file}` : ""}</div>}
     {status.last_error && <div className="error" style={{ marginTop: 10 }}>{status.last_error}</div>}
     {repoRows.length > 0 && <div style={{ marginTop: 12 }}>

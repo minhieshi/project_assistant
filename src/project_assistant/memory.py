@@ -253,7 +253,7 @@ Keep only durable or repeatedly supported information such as:
 - stable goals or workflow choices.
 
 Rules:
-- Learn from repeated corrections. For example, repeated requests to simplify can support a durable preference for the smallest viable implementation and incremental complexity.
+- Learn from repeated corrections. For example, repeated requests for fewer interruptions can support a durable preference for larger coherent implementation units, while repeated requests for simpler designs can support a preference for lower architectural complexity.
 - Do not store temporary task details that belong in project memory.
 - Do not turn a single weak signal into a strong preference.
 - If new evidence conflicts with an older preference, update or qualify it instead of keeping contradictory statements.

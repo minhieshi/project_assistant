@@ -1,6 +1,6 @@
-# Project Assistant v0.8.12 — User Guide
+# Project Assistant v0.8.15 — User Guide
 
-This guide describes the behaviour that is actually implemented in **v0.8.12**. It covers setup, projects and source repositories, indexing and retrieval, conversation persistence and consolidation, local state, MCP credential storage, the CLI, the local API, and troubleshooting.
+This guide describes the behaviour that is actually implemented in **v0.8.15**. It covers setup, projects and source repositories, indexing and retrieval, conversation persistence and consolidation, local state, MCP credential storage, the CLI, the local API, and troubleshooting.
 
 > **MCP status:** v0.8.8 connects authenticated MCP servers to the normal retrieval planner through an explicit local per-server tool allowlist. Only tools you approve in the Connections tab or with `mcp-allow` are exposed to chat retrieval. MCP tool descriptions, schemas and results are treated as untrusted external evidence, and obvious mutation-oriented tool names are blocked locally even if the server labels them read-only.
 
@@ -21,8 +21,8 @@ Its normal execution path does **not** edit registered source repositories or ex
 ```text
 Project Assistant
   understand / retrieve / investigate / design
-  plan small implementation steps
-  author complete code/config/tests for the confirmed step
+  choose substantial implementation units at natural feature/file boundaries
+  author complete code/config/tests for the current coherent unit
                     |
                     v
                   Human
@@ -312,7 +312,9 @@ These operations are restricted to the project and registered source roots and a
 
 ### Indexing status and errors
 
-The UI/API exposes `.assistant/index_status.json`.
+The UI/API exposes `.assistant/index_status.json`. Full indexing started from the browser is a backend-owned job: the POST returns immediately, status transitions through `queued` → `running` → `completed` (or `failed`), and the browser polls only while the job is active. The status file includes a run ID, owner PID and update timestamp and is written atomically.
+
+All indexing writers for one project share the same project-wide lock, including delayed conversation maintenance from older/rebuilt assistant instances. If the API restarts and finds an orphaned `queued`/`running` state with no live owner, it marks that run interrupted rather than leaving the browser polling forever.
 
 If a generated memory file cannot be indexed after it is written, the error is appended to:
 
@@ -333,13 +335,14 @@ Use Guided implementation when you want Project Assistant to produce code for yo
 For a non-trivial new implementation request:
 
 1. the retrieval planner locates the likely repositories, files, integration boundaries and tests;
-2. Project Assistant breaks the work into 2–6 small coherent steps;
-3. it explains the plan and **stops before code**;
-4. after you confirm a step (`yes`, `do step 1`, `next`, etc.), it re-runs implementation retrieval and re-reads likely target files live;
-5. it produces complete pasteable code for that step only;
-6. it gives validation commands/checks and stops for your result before advancing.
+2. Project Assistant chooses the **largest coherent, reviewable implementation unit** rather than splitting by line count or an arbitrary step count;
+3. a normal unit may be a complete feature slice, whole-file change, complete playbook/set of related playbooks, or a tightly coupled 2–3 file change including required tests/configuration;
+4. when your request clearly says to implement/build/add/fix a well-defined change, it may proceed directly with that complete unit instead of forcing a planning-only stop;
+5. when a material design decision, ambiguity, independent subsystem or validation dependency creates a natural boundary, it presents a concise plan and waits for approval;
+6. before code generation it re-runs implementation retrieval and reads all important target files live;
+7. it produces complete pasteable code for the full approved unit, followed by validation commands/checks.
 
-A genuinely small, self-contained change may be implemented immediately when your request clearly asks for the code.
+Guided mode deliberately avoids micro-steps. Imports, helpers, call sites, configuration, tests and documentation that are required for one behaviour are normally kept together. Older user-memory text that says `smallest viable implementation` does not override this unit-sizing rule.
 
 For each changed artefact, responses should include:
 
@@ -403,7 +406,7 @@ Conversation files use private file permissions.
 
 ### Concurrent conversations
 
-v0.8.12 allows different conversations to run concurrently. You can start a response in one conversation, switch to another conversation, and send another request while the first response continues. Running conversations are marked **Running…** in the sidebar, and each conversation keeps its own stream text/error/context state.
+v0.8.13 keeps different conversations concurrent and also frees the current conversation immediately after its persisted assistant reply is rendered. Post-response indexing is background maintenance and does not keep the composer in Working state. v0.8.12 introduced the underlying cross-conversation concurrency. You can start a response in one conversation, switch to another conversation, and send another request while the first response continues. Running conversations are marked **Running…** in the sidebar, and each conversation keeps its own stream text/error/context state.
 
 When you select a conversation in the sidebar, the chat view jumps to the latest message as soon as that conversation has loaded. User prompts are visually distinct from assistant output with a blue-toned, right-aligned bubble, making the most recent prompt/response boundary easier to find in long conversations.
 
@@ -1089,7 +1092,7 @@ project-assistant --project ~/work/context-builder \
   chat a1b2c3d4e5 "Implement the next step" --guided
 ```
 
-`--guided` switches retrieval purpose to `implementation`, requires stronger live-file grounding, and adds the stepwise copy-paste code contract to the model prompt. Quote the message in the shell when it contains spaces/shell metacharacters.
+`--guided` switches retrieval purpose to `implementation`, requires stronger live-file grounding, and adds the adaptive coherent-unit copy-paste code contract to the model prompt. Quote the message in the shell when it contains spaces/shell metacharacters.
 
 #### `consolidate [--force]`
 

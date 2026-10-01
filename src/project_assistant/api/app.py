@@ -17,6 +17,7 @@ from ..conversations import ConversationStore
 from ..concurrency import ConversationRunCoordinator
 from ..knowledge_graph import KnowledgeGraph
 from ..index_status import IndexStatusStore
+from ..index_jobs import IndexJobCoordinator
 from ..mcp_client import MCPManager
 from ..mcp_registry import MCPServerRegistry
 from ..security import load_or_create_api_token, tokens_equal, validate_source_root
@@ -42,6 +43,7 @@ API_TOKEN = load_or_create_api_token()
 MCP_REGISTRY = MCPServerRegistry()
 MCP_MANAGER = MCPManager(registry=MCP_REGISTRY)
 CONVERSATION_RUNS = ConversationRunCoordinator()
+INDEX_JOBS = IndexJobCoordinator()
 
 
 def _safe_error_message(exc: Exception) -> str:
@@ -117,9 +119,10 @@ async def _lifespan(app: FastAPI):
                 await task
             except asyncio.CancelledError:
                 pass
+        INDEX_JOBS.shutdown(wait=False)
 
 
-app = FastAPI(title="Local Project Assistant", version="0.8.12", lifespan=_lifespan)
+app = FastAPI(title="Local Project Assistant", version="0.8.15", lifespan=_lifespan)
 app.add_middleware(TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost", "testserver"])
 
 
@@ -137,7 +140,7 @@ async def local_api_auth(request: Request, call_next):
 
 @app.get("/health")
 def health() -> dict:
-    return {"status": "ok", "version": "0.8.12"}
+    return {"status": "ok", "version": "0.8.15"}
 
 
 @app.get("/api/status")
@@ -147,7 +150,7 @@ def status() -> dict:
 
     settings = PortkeySettings.from_env()
     return {
-        "version": "0.8.12",
+        "version": "0.8.15",
         "projects_root": str(registry.projects_root),
         "portkey": {
             "base_url": settings.base_url,
@@ -351,19 +354,47 @@ def remove_source(project_id: str, source_name: str) -> dict:
         raise _error(exc, 404)
 
 
-@app.post("/api/projects/{project_id}/index")
+def _process_alive(pid: int | None) -> bool:
+    if not pid or pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+
+
+@app.post("/api/projects/{project_id}/index", status_code=202)
 async def index_project(project_id: str) -> dict:
     try:
-        assistant = assistant_for(project_id, refresh=True)
-        return await asyncio.to_thread(assistant.index_changed)
+        root = project_path(project_id)
+        assistant = assistant_for(project_id)
+        status_store = IndexStatusStore(root / ".assistant/index_status.json")
+        accepted = INDEX_JOBS.submit(project_id, assistant.index_changed, on_queued=status_store.queue)
+        if not accepted:
+            return {"accepted": False, "state": "running"}
+        return {"accepted": True, "state": "queued"}
     except Exception as exc:
         raise _error(exc)
+
 
 @app.get("/api/projects/{project_id}/index-status")
 def get_index_status(project_id: str) -> dict:
     try:
         root = project_path(project_id)
-        return IndexStatusStore(root / ".assistant/index_status.json").status.to_dict()
+        store = IndexStatusStore(root / ".assistant/index_status.json")
+        status = store.status
+        if status.state in {"queued", "running"} and not INDEX_JOBS.active(project_id):
+            # A full API index job cannot remain legitimately active after the
+            # owning process/job has vanished. This recovers stale `running` files
+            # after crashes/restarts instead of making the UI poll forever. An
+            # external CLI index from another live process is left alone.
+            if status.pid is None or status.pid == os.getpid() or not _process_alive(status.pid):
+                store.interrupt("Indexing was interrupted: no active index job owns this status.")
+                status = store.status
+        return status.to_dict()
     except Exception as exc:
         raise _error(exc)
 
@@ -483,6 +514,10 @@ def stream_chat(project_id: str, conversation_id: str, body: ChatRequest):
                 elif event[0] == "done":
                     entry = event[1]
                     payload = entry.to_dict() if hasattr(entry, "to_dict") else None
+                    # The assistant entry is already durably written at this point.
+                    # Release the conversation before notifying the browser so the
+                    # user can immediately send the next turn while indexing catches up.
+                    lease.release()
                     yield _sse("done", {"ok": True, "entry": payload})
         except Exception as exc:
             yield _sse("error", {"message": _safe_error_message(exc)})

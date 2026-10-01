@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
 import time
+import uuid
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -28,6 +30,9 @@ class RepoIndexStats:
 @dataclass
 class IndexStatus:
     state: str = "idle"
+    run_id: str | None = None
+    pid: int | None = None
+    updated_at: str | None = None
     started_at: str | None = None
     finished_at: str | None = None
     current_repo: str | None = None
@@ -70,8 +75,30 @@ class IndexStatusStore:
             except Exception:
                 self.status = IndexStatus()
 
+    def queue(self) -> None:
+        now = utc_now()
+        self.status = IndexStatus(
+            state="queued",
+            run_id=uuid.uuid4().hex,
+            pid=os.getpid(),
+            updated_at=now,
+            started_at=now,
+        )
+        self.save(force=True)
+
     def start(self) -> None:
-        self.status = IndexStatus(state="running", started_at=utc_now())
+        now = utc_now()
+        # Preserve the queued run identity if the API queued this job before the
+        # project-wide index lock became available. CLI indexing starts directly.
+        run_id = self.status.run_id if self.status.state == "queued" and self.status.run_id else uuid.uuid4().hex
+        started_at = self.status.started_at if self.status.state == "queued" and self.status.started_at else now
+        self.status = IndexStatus(
+            state="running",
+            run_id=run_id,
+            pid=os.getpid(),
+            updated_at=now,
+            started_at=started_at,
+        )
         self.save(force=True)
 
     def repo(self, name: str) -> RepoIndexStats:
@@ -106,6 +133,9 @@ class IndexStatusStore:
         self.status.current_file = None
         self.save(force=True)
 
+    def interrupt(self, message: str = "Indexing was interrupted before completion.") -> None:
+        self.fail(message)
+
     def fail(self, message: str) -> None:
         self.status.state = "failed"
         self.status.finished_at = utc_now()
@@ -118,7 +148,12 @@ class IndexStatusStore:
         now = time.monotonic()
         if not force and self.path.exists() and now - self._last_write < 0.15:
             return
+        self.status.updated_at = utc_now()
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.write_text(json.dumps(self.status.to_dict(), indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        payload = json.dumps(self.status.to_dict(), indent=2, sort_keys=True) + "\n"
+        temporary = self.path.with_name(f".{self.path.name}.{os.getpid()}.tmp")
+        temporary.write_text(payload, encoding="utf-8")
+        private_file(temporary)
+        os.replace(temporary, self.path)
         private_file(self.path)
         self._last_write = now

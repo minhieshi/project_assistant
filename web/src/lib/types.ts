@@ -94,7 +94,10 @@ export type RepoIndexStats = {
 };
 
 export type IndexStatus = {
-  state: "idle" | "running" | "completed" | "failed";
+  state: "idle" | "queued" | "running" | "completed" | "failed";
+  run_id?: string | null;
+  pid?: number | null;
+  updated_at?: string | null;
   started_at?: string | null;
   finished_at?: string | null;
   current_repo?: string | null;

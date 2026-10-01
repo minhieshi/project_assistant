@@ -1,3 +1,37 @@
+# v0.8.15
+
+## 0.8.15 — Adaptive guided implementation units
+
+- Replaces the rigid `2–6 small steps` guided workflow with adaptive implementation units chosen at natural feature/file/test boundaries.
+- Defaults to the largest coherent reviewable unit, typically one complete feature slice, complete playbook/set, whole-file change, or tightly coupled 2–3 file change.
+- Prevents micro-steps that split imports, helpers, call sites, config and tests needed for one behaviour.
+- Lets clear explicit implementation requests proceed directly to code instead of forcing a planning-only approval turn.
+- Keeps approval stops for genuine design choices, ambiguity, independent subsystems, validation dependencies or otherwise unwieldy responses.
+- Updates implementation retrieval to gather all tightly coupled live targets needed for the coherent unit.
+- Removes the `smallest viable implementation` example from memory-consolidation guidance so architectural simplicity is not confused with tiny workflow increments.
+
+# v0.8.14
+
+## 0.8.14 — Reliable background full-index lifecycle
+
+- Moves browser-triggered full indexing into a backend-owned job coordinator; the HTTP POST returns immediately instead of remaining open for the full indexing run.
+- Adds persisted `queued` state and UI polling that runs only while status is `queued`/`running`, then stops on `completed`/`failed`.
+- Reuses one project-wide indexing lock across assistant rebuilds/invalidation so delayed conversation indexing cannot race a manual full index through separate lock instances.
+- Adds run ID, owner PID and update timestamp to index status and writes status files atomically.
+- Recovers orphaned `queued`/`running` states after backend restart/crash by marking them interrupted instead of polling forever.
+- Prevents duplicate full-index jobs for the same project while allowing different projects to index concurrently.
+
+# v0.8.13
+
+## 0.8.13 — Free chat immediately after render
+
+- Treats the SSE `done` frame as the interactive completion boundary.
+- Releases the same-conversation run lease before `done`, allowing the next turn immediately after the persisted assistant reply is rendered.
+- Clears the UI Working state directly from `done` instead of waiting for stream closure.
+- Detaches conversation-list refresh from the send critical path.
+- Debounces/coalesces post-response conversation re-indexing (10 seconds by default) so rapid turns do not queue redundant indexing jobs.
+- Adds `PROJECT_ASSISTANT_CONVERSATION_INDEX_DELAY_SECONDS` (`0` disables the debounce).
+
 # v0.8.12
 
 ## 0.8.12 — Conversation navigation polish

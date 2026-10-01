@@ -444,7 +444,7 @@ class WebFoundationTests(unittest.TestCase):
     def test_api_app_imports_without_initialising_rag(self):
         from project_assistant.api.app import app
 
-        self.assertEqual(app.version, "0.8.12")
+        self.assertEqual(app.version, "0.8.15")
 
     def test_portkey_url_is_explicit_and_does_not_default_public(self):
         from project_assistant.config import PortkeySettings
@@ -1153,13 +1153,14 @@ class MultiRoundRetrievalTests(unittest.TestCase):
         agent = RetrievalAgent(model, FakeToolkit())  # type: ignore[arg-type]
         agent.plan_and_retrieve("implement the next step", "recent plan", [], [], purpose="implementation")
         self.assertIn("GUIDED-IMPLEMENTATION RULES", model.system)
-        self.assertIn("read likely target files", model.system.lower())
+        self.assertIn("read all tightly coupled targets live", model.system.lower())
+        self.assertIn("complete feature slice/file-level change", model.system)
         self.assertIn("read the important targets live", model.user)
         self.assertIn("HEAD=abc123", model.user)
 
 
 class GuidedImplementationTests(unittest.TestCase):
-    def test_guided_mode_adds_stepwise_copy_paste_contract_and_implementation_retrieval(self):
+    def test_guided_mode_adds_adaptive_copy_paste_contract_and_implementation_retrieval(self):
         import sys
         import types
         from types import SimpleNamespace
@@ -1189,7 +1190,10 @@ class GuidedImplementationTests(unittest.TestCase):
             _context, system, user = assistant._prepare_answer(conv.id, "Implement the feature", mode="guided")
             self.assertEqual(seen.get("purpose"), "implementation")
             self.assertIn("GUIDED IMPLEMENTATION MODE", system)
-            self.assertIn("STOP before writing implementation code", system)
+            self.assertIn("largest coherent, reviewable implementation unit", system)
+            self.assertIn("Prefer 1-3 units", system)
+            self.assertIn("proceed directly with the first coherent implementation unit", system)
+            self.assertIn("Never create micro-steps", system)
             self.assertIn("Repository: <registered repository name>", system)
             self.assertIn('Never use placeholders such as "..."', system)
             self.assertIn("live target source", user)
@@ -1596,7 +1600,8 @@ def test_post_response_index_can_be_scheduled_without_blocking_caller():
         assistant._index_lock = Lock()
         assistant._index_executor = ThreadPoolExecutor(max_workers=1)
         try:
-            assistant._schedule_index(Path(tmp) / "conversation.md")
+            with patch.dict(os.environ, {"PROJECT_ASSISTANT_CONVERSATION_INDEX_DELAY_SECONDS": "0"}):
+                assistant._schedule_index(Path(tmp) / "conversation.md")
             assert started.wait(timeout=1)
             # If _schedule_index were synchronous, execution would still be blocked
             # inside SlowIndexer and this assertion could never be reached.
@@ -1604,3 +1609,178 @@ def test_post_response_index_can_be_scheduled_without_blocking_caller():
         finally:
             release.set()
             assistant._index_executor.shutdown(wait=True)
+
+
+def test_post_response_index_debounces_rapid_turns_for_same_conversation():
+    import sys
+    import types
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event, Lock
+    fake_chroma = types.ModuleType("langchain_chroma")
+    fake_chroma.Chroma = object
+    fake_docs = types.ModuleType("langchain_core.documents")
+    fake_docs.Document = object
+    with patch.dict(sys.modules, {"langchain_chroma": fake_chroma, "langchain_core.documents": fake_docs}):
+        from project_assistant.assistant import ProjectAssistant
+
+    indexed = []
+    finished = Event()
+
+    class CountingIndexer:
+        def index_specific_file(self, path):
+            indexed.append(Path(path))
+            finished.set()
+
+    with tempfile.TemporaryDirectory() as tmp:
+        assistant = object.__new__(ProjectAssistant)
+        assistant.project_dir = Path(tmp)
+        assistant.indexer = CountingIndexer()
+        assistant._index_lock = Lock()
+        assistant._index_executor = ThreadPoolExecutor(max_workers=1)
+        try:
+            path = Path(tmp) / "conversation.md"
+            with patch.dict(os.environ, {"PROJECT_ASSISTANT_CONVERSATION_INDEX_DELAY_SECONDS": "0.05"}):
+                assistant._schedule_index(path)
+                assistant._schedule_index(path)
+                assistant._schedule_index(path)
+            assert finished.wait(timeout=1)
+            assistant._index_executor.shutdown(wait=True)
+            assert indexed == [path.resolve()]
+        finally:
+            # shutdown may already have been called above
+            try:
+                assistant._index_executor.shutdown(wait=True)
+            except Exception:
+                pass
+
+
+def test_index_job_coordinator_marks_job_active_until_work_finishes():
+    from threading import Event
+    from project_assistant.index_jobs import IndexJobCoordinator
+
+    coordinator = IndexJobCoordinator(max_workers=1)
+    queued = Event()
+    started = Event()
+    release = Event()
+
+    def on_queued():
+        queued.set()
+
+    def work():
+        started.set()
+        release.wait(timeout=2)
+
+    try:
+        assert coordinator.submit("project-a", work, on_queued=on_queued)
+        assert queued.is_set()
+        assert started.wait(timeout=1)
+        assert coordinator.active("project-a")
+        assert not coordinator.submit("project-a", work)
+        release.set()
+        for _ in range(100):
+            if not coordinator.active("project-a"):
+                break
+            import time
+            time.sleep(0.01)
+        assert not coordinator.active("project-a")
+    finally:
+        release.set()
+        coordinator.shutdown(wait=True)
+
+
+def test_index_status_queue_running_completed_round_trip():
+    from project_assistant.index_status import IndexStatusStore
+
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "index_status.json"
+        store = IndexStatusStore(path)
+        store.queue()
+        queued = IndexStatusStore(path).status
+        assert queued.state == "queued"
+        assert queued.run_id
+        assert queued.pid == os.getpid()
+
+        # Simulate the long-running indexer loading the queued state from disk.
+        worker_store = IndexStatusStore(path)
+        run_id = worker_store.status.run_id
+        worker_store.start()
+        running = IndexStatusStore(path).status
+        assert running.state == "running"
+        assert running.run_id == run_id
+        worker_store.finish()
+
+        completed = IndexStatusStore(path).status
+        assert completed.state == "completed"
+        assert completed.finished_at
+        assert completed.updated_at
+
+
+def test_assistant_refresh_reuses_project_index_lock():
+    import project_assistant.api.dependencies as deps
+
+    class FakeAssistant:
+        calls = []
+
+        @classmethod
+        def build(cls, path, index_lock=None):
+            instance = type("BuiltAssistant", (), {})()
+            instance.index_lock = index_lock
+            cls.calls.append(instance)
+            return instance
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp).resolve()
+        project_id = "lock-test"
+        original_project_path = deps.project_path
+        original_assistants = dict(deps._assistants)
+        original_locks = dict(deps._index_locks)
+        try:
+            deps._assistants.clear()
+            deps._index_locks.clear()
+            deps.project_path = lambda _pid: root
+            import sys
+            import types
+            fake_assistant_module = types.ModuleType("project_assistant.assistant")
+            fake_assistant_module.ProjectAssistant = FakeAssistant
+            with patch.dict(sys.modules, {"project_assistant.assistant": fake_assistant_module}):
+                first = deps.assistant_for(project_id)
+                second = deps.assistant_for(project_id, refresh=True)
+            assert first is not second
+            assert first.index_lock is second.index_lock
+        finally:
+            deps.project_path = original_project_path
+            deps._assistants.clear(); deps._assistants.update(original_assistants)
+            deps._index_locks.clear(); deps._index_locks.update(original_locks)
+
+
+def test_index_status_endpoint_recovers_orphaned_running_job():
+    import importlib
+    from project_assistant.index_status import IndexStatusStore
+
+    app_module = importlib.import_module("project_assistant.api.app")
+
+    class NoJobs:
+        @staticmethod
+        def active(_project_id):
+            return False
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        status_path = root / ".assistant/index_status.json"
+        store = IndexStatusStore(status_path)
+        store.start()
+        assert IndexStatusStore(status_path).status.state == "running"
+
+        original_project_path = app_module.project_path
+        original_jobs = app_module.INDEX_JOBS
+        try:
+            app_module.project_path = lambda _project_id: root
+            app_module.INDEX_JOBS = NoJobs()
+            status = app_module.get_index_status("project-a")
+        finally:
+            app_module.project_path = original_project_path
+            app_module.INDEX_JOBS = original_jobs
+
+        assert status["state"] == "failed"
+        assert "interrupted" in (status["last_error"] or "").lower()
+        assert IndexStatusStore(status_path).status.state == "failed"
