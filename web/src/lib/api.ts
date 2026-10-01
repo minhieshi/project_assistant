@@ -65,7 +65,7 @@ export type StreamCallbacks = {
   onDone?: (entry?: ConversationEntry) => void;
 };
 
-export async function streamChat(projectId: string, conversationId: string, message: string, mode: "chat" | "guided", callbacks: StreamCallbacks) {
+export async function streamChat(projectId: string, conversationId: string, message: string, mode: "chat" | "implement", callbacks: StreamCallbacks) {
   const response = await fetch(`${API_BASE}/projects/${projectId}/conversations/${conversationId}/stream`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },

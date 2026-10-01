@@ -64,7 +64,7 @@ export default function Home() {
   const [context, setContext] = useState<ContextSummary | null>(null);
   const [tab, setTab] = useState<"chat" | "project" | "connections">("chat");
   const [conversationRuns, setConversationRuns] = useState<Record<string, ConversationRunState>>({});
-  const [conversationModes, setConversationModes] = useState<Record<string, "chat" | "guided">>({});
+  const [conversationModes, setConversationModes] = useState<Record<string, "chat" | "implement">>({});
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [importPath, setImportPath] = useState("");
@@ -245,7 +245,7 @@ export default function Home() {
     } catch (e) { setError(String(e)); } finally { setBusy(false); }
   }
 
-  const send = useCallback(async (textValue: string, sendMode: "chat" | "guided") => {
+  const send = useCallback(async (textValue: string, sendMode: "chat" | "implement") => {
     const text = textValue.trim();
     const pid = projectId;
     const cid = conversationId;
@@ -330,16 +330,6 @@ export default function Home() {
       void loadConversation(pid, cid).catch(() => undefined);
     }
   }, [conversationId, conversationRuns, loadConversation, loadConversations, projectId]);
-
-  const approveLatest = useCallback(async () => {
-    if (!conversation || !conversationId || currentConversationBusy) return;
-    const latest = [...conversation.entries].reverse().find((entry) => entry.role === "assistant" || entry.role === "user");
-    if (!latest || latest.role !== "assistant") return;
-    await send(
-      "Approved — proceed with the latest action or step you proposed. Keep this approval scoped only to that latest proposal; do not broaden it to unrelated actions.",
-      currentMode,
-    );
-  }, [conversation, conversationId, currentConversationBusy, currentMode, send]);
 
 
 
@@ -551,8 +541,6 @@ export default function Home() {
               busy={currentConversationBusy}
               mode={currentMode}
               setMode={(mode) => setConversationModes((current) => ({ ...current, [conversationId]: mode }))}
-              canApprove={([...conversation.entries].reverse().find((entry) => entry.role === "assistant" || entry.role === "user")?.role === "assistant") && !currentConversationBusy}
-              onApprove={approveLatest}
               onSend={send}
             />}
           </>
@@ -609,8 +597,8 @@ export default function Home() {
         </div>
         <ContextPanel context={context} />
 
-        <div className="section-title">Guided implementation</div>
-        <div className="notice">Use <strong>Guided implementation</strong> for coding work. Project Assistant will retrieve the tightly coupled live source needed for the requested change and return complete copy-pasteable implementation code in the current response whenever practical, while keeping repository writes under your control.</div>
+        <div className="section-title">Implement mode</div>
+        <div className="notice">Use <strong>Implement</strong> for coding work. Project Assistant investigates autonomously, reads the tightly coupled live source it needs, and returns the complete copy-pasteable change in one response whenever practical. There are no routine approval or continuation checkpoints; your copy/paste remains the write boundary.</div>
       </aside>
     </div>
   );
@@ -690,13 +678,11 @@ function StreamingMessage({ text }: { text: string }) {
   </div>;
 }
 
-const Composer = memo(function Composer({ busy, mode, setMode, canApprove, onApprove, onSend }: {
+const Composer = memo(function Composer({ busy, mode, setMode, onSend }: {
   busy: boolean;
-  mode: "chat" | "guided";
-  setMode: (mode: "chat" | "guided") => void;
-  canApprove: boolean;
-  onApprove: () => Promise<void>;
-  onSend: (text: string, mode: "chat" | "guided") => Promise<void>;
+  mode: "chat" | "implement";
+  setMode: (mode: "chat" | "implement") => void;
+  onSend: (text: string, mode: "chat" | "implement") => Promise<void>;
 }) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
@@ -716,20 +702,19 @@ const Composer = memo(function Composer({ busy, mode, setMode, canApprove, onApp
         onKeyDown={(event) => {
           if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); submit(); }
         }}
-        placeholder={mode === "guided" ? "Describe the change. Guided mode will normally implement the complete requested feature/fix in one response." : "Ask about this project..."}
+        placeholder={mode === "implement" ? "Describe what you want built or fixed. Implement mode will investigate and return the complete change without routine approval pauses." : "Ask about this project..."}
       />
       <div className="composer-actions">
         <div className="row wrap">
           <div className="mode">
             <button type="button" className={mode === "chat" ? "active" : ""} onClick={() => setMode("chat")}>Chat</button>
-            <button type="button" className={mode === "guided" ? "active" : ""} onClick={() => setMode("guided")}>Guided implementation</button>
+            <button type="button" className={mode === "implement" ? "active" : ""} onClick={() => setMode("implement")}>Implement</button>
           </div>
         </div>
         <div className="row wrap">
-          <button type="button" className="btn approve" onClick={() => void onApprove()} disabled={!canApprove || busy} title="Approve only the latest assistant-proposed action in this conversation">Approve</button>
           <button type="button" className="btn primary" onClick={submit} disabled={busy}>{busy ? "Working…" : "Send"}</button>
         </div>
-        <span className="small">Different conversations can run concurrently. Approve is scoped to the latest assistant proposal in this conversation. Guided mode can author copy-pasteable code; you remain the write/commit boundary.</span>
+        <span className="small">Different conversations can run concurrently. Implement mode investigates autonomously and returns copy-pasteable code; your copy/paste remains the write/commit boundary.</span>
       </div>
     </div>
   </div>;

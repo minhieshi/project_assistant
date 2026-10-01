@@ -103,7 +103,9 @@ def main() -> None:
     p_chat = sub.add_parser("chat")
     p_chat.add_argument("conversation_id")
     p_chat.add_argument("message")
-    p_chat.add_argument("--guided", action="store_true", help="Use complete source-grounded guided implementation mode")
+    mode_group = p_chat.add_mutually_exclusive_group()
+    mode_group.add_argument("--implement", action="store_true", help="Implement the complete requested change with source-grounded copy-pasteable code")
+    mode_group.add_argument("--guided", action="store_true", help=argparse.SUPPRESS)  # compatibility alias
 
     p_search = sub.add_parser("search")
     p_search.add_argument("query")
@@ -286,7 +288,7 @@ def main() -> None:
         print(conv.id)
         print(conv.path)
     elif args.command == "chat":
-        mode = "guided" if args.guided else "chat"
+        mode = "implement" if (args.implement or args.guided) else "chat"
         print(assistant.answer(args.conversation_id, args.message, mode=mode))
     elif args.command == "search":
         for hit in assistant.indexer.search(args.query):

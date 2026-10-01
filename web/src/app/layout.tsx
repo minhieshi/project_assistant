@@ -3,7 +3,7 @@ import "./globals.css";
 
 export const metadata: Metadata = {
   title: "Project Assistant",
-  description: "Local-first project intelligence with multi-repo RAG, knowledge graph, guided code generation and MCP connectivity",
+  description: "Local-first project intelligence with multi-repo RAG, knowledge graph, direct Implement-mode code generation and MCP connectivity",
 };
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {

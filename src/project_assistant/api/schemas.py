@@ -38,7 +38,7 @@ class ConversationCreateRequest(BaseModel):
 
 class ChatRequest(BaseModel):
     message: str = Field(min_length=1, max_length=200_000)
-    mode: Literal["chat", "guided"] = "chat"
+    mode: Literal["chat", "implement", "guided"] = "chat"
 
 
 

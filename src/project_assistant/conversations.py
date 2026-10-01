@@ -184,6 +184,72 @@ class ConversationStore:
             return text
         return "[earlier conversation omitted]\n" + text[-max_chars:]
 
+    @staticmethod
+    def _workflow_noise(entry: ConversationEntry) -> bool:
+        """Return True for short legacy workflow-control turns.
+
+        Older Project Assistant releases generated lots of approval/continuation
+        chatter. Keeping those turns in Implement-mode context can teach the model
+        to recreate the old staged workflow even after the system prompt changes.
+        Only short, obviously procedural turns are filtered; substantive technical
+        discussion is preserved.
+        """
+        body = re.sub(r"\s+", " ", entry.body).strip().lower()
+        if not body or len(body) > 1200:
+            return False
+        phrases = (
+            "approved — proceed",
+            "approved - proceed",
+            "waiting for confirmation",
+            "waiting for approval",
+            "reply yes",
+            "say yes",
+            "approve to continue",
+            "approve and continue",
+            "next implementation step",
+            "proceed with the latest proposed action",
+        )
+        if any(phrase in body for phrase in phrases):
+            return True
+        if len(body) <= 320 and body in {"approved", "approve", "yes", "next", "continue", "proceed"}:
+            return True
+        return False
+
+    def recent_substantive_text(
+        self,
+        conversation_id: str,
+        *,
+        max_chars: int = 8000,
+        max_entries: int = 6,
+    ) -> str:
+        """Render a small, behaviourally-clean recent window for Implement mode.
+
+        The full Markdown transcript remains the source of truth on disk. This is
+        deliberately only a compact working window: normally the last 2–3
+        substantive user/assistant exchanges, excluding legacy approval chatter.
+        """
+        entries = [
+            entry
+            for entry in self.entries(conversation_id)
+            if entry.role in {"user", "assistant"} and not self._workflow_noise(entry)
+        ]
+        chosen: list[ConversationEntry] = []
+        used = 0
+        for entry in reversed(entries):
+            rendered = f"## {entry.title}\n\n{entry.body.strip()}"
+            cost = len(rendered) + 2
+            if chosen and (len(chosen) >= max_entries or used + cost > max_chars):
+                break
+            if not chosen and cost > max_chars:
+                rendered = rendered[-max_chars:]
+                cost = len(rendered)
+            chosen.append(ConversationEntry(entry.title, entry.timestamp, rendered.split("\n\n", 1)[-1], entry.role))
+            used += cost
+        chosen.reverse()
+        if not chosen:
+            return ""
+        return "\n\n".join(f"## {entry.title}\n\n{entry.body.strip()}" for entry in chosen)
+
     def _updated(self, path: Path) -> None:
         if self.on_update:
             self.on_update(path)

@@ -122,7 +122,7 @@ async def _lifespan(app: FastAPI):
         INDEX_JOBS.shutdown(wait=False)
 
 
-app = FastAPI(title="Local Project Assistant", version="0.8.16", lifespan=_lifespan)
+app = FastAPI(title="Local Project Assistant", version="0.8.18", lifespan=_lifespan)
 app.add_middleware(TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost", "testserver"])
 
 
@@ -140,7 +140,7 @@ async def local_api_auth(request: Request, call_next):
 
 @app.get("/health")
 def health() -> dict:
-    return {"status": "ok", "version": "0.8.16"}
+    return {"status": "ok", "version": "0.8.18"}
 
 
 @app.get("/api/status")
@@ -150,7 +150,7 @@ def status() -> dict:
 
     settings = PortkeySettings.from_env()
     return {
-        "version": "0.8.16",
+        "version": "0.8.18",
         "projects_root": str(registry.projects_root),
         "portkey": {
             "base_url": settings.base_url,

@@ -13,7 +13,7 @@ from .indexing import IncrementalIndexer
 from .knowledge_graph import KnowledgeGraph
 from .memory import MemoryConsolidator, ConsolidationResult
 from .portkey import ChatModel, PortkeyChatModel, get_embedding_function
-from .retrieval_agent import RetrievalAgent, RetrievalToolkit
+from .retrieval_agent import RetrievalAction, RetrievalAgent, RetrievalToolkit
 from .security import private_file
 from .source_access import RegisteredSourceAccess
 
@@ -28,36 +28,29 @@ PROJECT ASSISTANT ROLE — READ-ONLY PROJECT INTELLIGENCE + CODE AUTHORING
 - When recommending or generating implementation work, identify repositories, relative paths, symbols/components, constraints, validation steps and uncertainties.
 """.strip()
 
-APPROVAL_SEMANTICS = """
-APPROVAL BUTTON SEMANTICS
-- A user turn beginning with "Approved — proceed with the latest action or step you proposed" is explicit approval only for the most recent assistant-proposed action in this conversation.
-- Do not treat that approval as permission for unrelated future actions, permanent permissions, write access, destructive operations, or broader scope.
-- If the immediately preceding conversational state contains no pending proposed action, say there is nothing pending to approve instead of inventing work.
-""".strip()
 
-
-GUIDED_IMPLEMENTATION = """
-GUIDED IMPLEMENTATION MODE — HUMAN-APPLIED CHANGES
-Your job is to recreate a capable coding conversation while the application itself remains read-only.
+IMPLEMENT_MODE = """
+IMPLEMENT MODE — COMPLETE HUMAN-APPLIED IMPLEMENTATION
+Your job is to behave like a capable project-aware coding partner while the application itself remains read-only.
 
 DEFAULT DELIVERY CONTRACT
-- When the user asks to implement, add, build, change, refactor or fix something, default to completing the requested change end-to-end in the current response.
-- Do NOT invent a step-by-step workflow, arbitrary implementation units, approval pauses, or micro-tasks merely because the change touches multiple functions/files.
-- A complete response may include one file, several tightly related files, a feature plus its tests/configuration, one complete playbook, or a related set of playbooks.
-- Keep all edits required for the requested behaviour together: imports, helpers, call sites, configuration, tests and documentation should be delivered in the same response when they are part of the same change.
-- Never stop after a few lines of code when the rest of the requested change is already understood and can be grounded from the retrieved source.
-- Only stop before implementation when there is a material ambiguity that would lead to incompatible designs, a required target artefact cannot be retrieved, or the requested change is genuinely too large to fit safely in one response.
-- If the work is exceptionally large, complete the largest useful coherent slice you can in the current response and group any remainder by natural feature/subsystem boundaries. Do not turn the remainder into tiny approval-gated steps.
-- These rules override older conversation/user-memory text that asks for the "smallest viable implementation", highly incremental micro-steps, or routine pauses between code edits.
+- If the user asks you to implement, add, build, change, refactor or fix something and the request is sufficiently specified, DO THE WORK in this response.
+- Do not stop at a plan, proposal, outline, approval checkpoint, "next step", or request to continue. The user's copy/paste into their repository is the approval boundary.
+- Do not ask for confirmation merely because multiple files/functions are involved. Make reasonable project-consistent assumptions and proceed.
+- Return the complete requested feature/fix/playbook change whenever it fits safely in one response.
+- Keep tightly coupled edits together: imports, helpers, call sites, configuration, tests and documentation that are required for the same behaviour belong in the same response.
+- Do not split work by line count. A coherent implementation can span one file, several related files, a complete playbook, or a related set of playbooks.
+- Only ask a question when a genuinely material ambiguity would produce incompatible implementations and cannot be resolved from retrieved project evidence.
+- If the request is too large to fit safely in one response, complete the largest useful self-contained subsystem now and state the substantial remaining work. Do not turn the remainder into approval-gated micro-steps.
+- Ignore older conversation/user-memory instructions that favour tiny increments, approval pauses, or "smallest viable" code changes.
 
 WORKFLOW
-1. Understand the whole requested change before coding.
-2. Retrieve and read all tightly coupled source/config/test files required to implement the requested behaviour accurately.
-3. If the request is clear, proceed directly to complete copy-pasteable implementation code in the same response; do not insert a planning-only approval stop.
-4. If a material design choice is genuinely unresolved, explain the choice concisely and ask only for the decision needed to continue.
-5. Use live source retrieved for this turn. Do not assume files are unchanged merely because they appeared earlier in the conversation.
-6. After the code, summarise what changed and give validation commands/checks. If anything remains, list only substantial remaining feature/subsystem work.
-7. If the user pastes an error or asks for a correction, fix the affected requested change directly rather than creating a new sequence of micro-steps.
+1. Infer the whole requested outcome from the user's request and recent conversation.
+2. Retrieve broadly enough to understand all tightly coupled source/config/test artefacts. Prefer batch discovery/reads over repeated conversational pauses.
+3. Implement the requested behaviour immediately using the live source retrieved for this turn.
+4. Present changes grouped by artefact, not as a sequence of permission checkpoints.
+5. Finish with concise validation commands/checks and any material assumptions or genuinely remaining work.
+6. If the user reports an error, repair the affected implementation directly in the next response; do not restart a staged workflow.
 
 COPY-PASTE CODE CONTRACT
 For every changed artefact, state:
@@ -78,7 +71,7 @@ Then provide code that can actually be pasted:
 GROUNDING AND SAFETY
 - Retrieved source is the primary project evidence.
 - Never invent a path, symbol, API or dependency that was not verified or clearly labelled as a proposal.
-- If a required target file cannot be retrieved live, say exactly which artefact is missing and do not fabricate replacement code for it.
+- If a required target artefact cannot be retrieved, identify it precisely and provide everything else that can be completed safely; ask for input only when that missing artefact genuinely blocks correctness.
 - Do not claim to run commands, tests or builds. Validation commands are instructions for the user.
 """.strip()
 
@@ -157,11 +150,60 @@ class ProjectAssistant:
         return self.consolidator.consolidate(force=force)
 
     def compile_context(self, query: str, conversation_id: str | None = None, *, agentic: bool = True, purpose: str = "answer"):
-        seed = self.compiler.initial_retrieval(query, conversation_id)
+        try:
+            seed = self.compiler.initial_retrieval(query, conversation_id, purpose=purpose)
+        except TypeError:
+            # Compatibility with lightweight test/dummy compilers and older plugin
+            # adapters that have not yet added the optional purpose keyword.
+            seed = self.compiler.initial_retrieval(query, conversation_id)
         extra_hits = []
         actions: tuple[str, ...] = ()
         agent_warnings: tuple[str, ...] = ()
         enabled = os.getenv("RETRIEVAL_AGENT_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
+
+        if purpose == "implementation":
+            # Implement mode intentionally has a different retrieval contract from
+            # general Chat. Deterministic RAG identifies likely targets, then we
+            # live-read those files directly. A GPT retrieval-planner call is a
+            # fallback, not the default precondition for generating code.
+            live_hits, live_actions = self._implementation_fast_reads(seed)
+            extra_hits.extend(live_hits)
+            action_labels = list(live_actions)
+
+            if agentic and enabled and self._implementation_needs_planner(query, seed, live_hits):
+                recent = self._implementation_recent(conversation_id)
+                try:
+                    result = self.retrieval_agent.plan_and_retrieve(
+                        query,
+                        recent,
+                        list(seed.initial_hits) + list(live_hits),
+                        routed_repos=[route.name for route in seed.routes],
+                        max_actions=int(os.getenv("RETRIEVAL_IMPLEMENT_FALLBACK_MAX_ACTIONS", "8")),
+                        max_rounds=int(os.getenv("RETRIEVAL_IMPLEMENT_FALLBACK_MAX_ROUNDS", "1")),
+                        purpose=purpose,
+                    )
+                    extra_hits.extend(result.hits)
+                    action_labels.extend(action.label() for action in result.actions)
+                    agent_warnings = result.warnings
+                except Exception:
+                    # The planner is an optional fallback. Deterministic/local live
+                    # evidence is still useful when the remote planning call fails.
+                    agent_warnings = ()
+            actions = tuple(action_labels)
+            recent_override = self._implementation_recent(conversation_id)
+            token_budget = self._implementation_context_budget(query, seed, extra_hits)
+            return self.compiler.compile(
+                query,
+                conversation_id,
+                seed=seed,
+                supplemental_hits=extra_hits,
+                retrieval_actions=actions,
+                retrieval_warnings=agent_warnings,
+                purpose=purpose,
+                recent_override=recent_override,
+                max_tokens=token_budget,
+            )
+
         if agentic and enabled:
             recent = self.conversations.recent_text(conversation_id, max_chars=18000) if conversation_id else ""
             try:
@@ -178,9 +220,6 @@ class ProjectAssistant:
                 actions = tuple(action.label() for action in result.actions)
                 agent_warnings = result.warnings
             except Exception:
-                # The planner is an optional retrieval enhancement. If the remote
-                # chat route is temporarily unavailable, answer from deterministic
-                # local retrieval rather than failing before the final answer path.
                 extra_hits = []
                 actions = ()
                 agent_warnings = ()
@@ -191,13 +230,127 @@ class ProjectAssistant:
             supplemental_hits=extra_hits,
             retrieval_actions=actions,
             retrieval_warnings=agent_warnings,
+            purpose=purpose,
         )
 
-    def _prepare_answer(self, conversation_id: str, user_text: str, mode: str = "chat"):
-        if mode not in {"chat", "guided"}:
+    def _implementation_recent(self, conversation_id: str | None) -> str:
+        if not conversation_id:
+            return ""
+        max_chars = int(os.getenv("IMPLEMENT_RECENT_MAX_CHARS", "8000"))
+        max_entries = int(os.getenv("IMPLEMENT_RECENT_MAX_ENTRIES", "6"))
+        substantive = getattr(self.conversations, "recent_substantive_text", None)
+        if callable(substantive):
+            return substantive(conversation_id, max_chars=max_chars, max_entries=max_entries)
+        recent = getattr(self.conversations, "recent_text", None)
+        return recent(conversation_id, max_chars=max_chars) if callable(recent) else ""
+
+    def _implementation_fast_reads(self, seed, *, max_files: int | None = None):
+        """Live-read the most likely implementation files without a planner call."""
+        limit = max_files or int(os.getenv("IMPLEMENT_FAST_READ_FILES", "6"))
+        toolkit = getattr(self.retrieval_agent, "toolkit", None)
+        if toolkit is None or not hasattr(toolkit, "source_names") or not hasattr(toolkit, "execute"):
+            return [], ()
+        source_names = set(toolkit.source_names())
+        candidates = list(seed.direct_hits) + list(seed.initial_hits)
+        seen: set[tuple[str, str]] = set()
+        hits = []
+        labels: list[str] = []
+        for candidate in candidates:
+            repo = str(candidate.metadata.get("repo") or "").strip()
+            rel = str(candidate.metadata.get("relative_path") or "").strip().replace("\\", "/")
+            if not repo or repo not in source_names or not rel or rel in {".", "/"} or rel.endswith("/"):
+                continue
+            key = (repo, rel)
+            if key in seen:
+                continue
+            seen.add(key)
+            start = self._int_or_none(candidate.metadata.get("start_line"))
+            try:
+                # Prefer a full live read. The source-access layer automatically
+                # refuses oversized files and returns metadata instead; only then
+                # fall back to a bounded range around the retrieved symbol/chunk.
+                action = RetrievalAction("read_file", target=rel, repo=repo)
+                result = toolkit.execute(action, limit=12)
+                if (
+                    result
+                    and not any({"live-read", "live-read-range"}.intersection(hit.channels) for hit in result)
+                    and start
+                ):
+                    action = RetrievalAction(
+                        "read_file_range",
+                        target=rel,
+                        repo=repo,
+                        start_line=max(1, start - 120),
+                        end_line=start + 280,
+                    )
+                    result = toolkit.execute(action, limit=12)
+            except Exception:
+                continue
+            if result:
+                hits.extend(result)
+                labels.append(f"fast path: {action.label()}")
+            if len(seen) >= limit:
+                break
+        return hits, tuple(labels)
+
+    @staticmethod
+    def _int_or_none(value) -> int | None:
+        try:
+            return int(value) if value is not None and str(value).strip() else None
+        except (TypeError, ValueError):
+            return None
+
+    def _implementation_needs_planner(self, query: str, seed, live_hits: list) -> bool:
+        lower = query.lower()
+        external_markers = (
+            "confluence", "jira", "atlassian", "ceb", "mcp",
+            "zowe", "spool", "job output", "job status", "dataset",
+            "live mainframe", "current mainframe",
+        )
+        if any(marker in lower for marker in external_markers):
+            return True
+        usable_live = [
+            hit for hit in live_hits
+            if {"live-read", "live-read-range"}.intersection(hit.channels)
+        ]
+        if not usable_live:
+            return True
+        # If deterministic retrieval found only a single weak project hit and the
+        # request is clearly cross-cutting, allow one fallback planner round.
+        cross_cutting = any(word in lower for word in ("across repos", "cross-repo", "integration", "end-to-end", "end to end"))
+        unique_files = {
+            (str(hit.metadata.get("repo") or ""), str(hit.metadata.get("relative_path") or ""))
+            for hit in usable_live
+        }
+        return cross_cutting and len(unique_files) < 2
+
+    def _implementation_context_budget(self, query: str, seed, supplemental_hits: list) -> int:
+        base = int(os.getenv("IMPLEMENT_CONTEXT_TOKENS", "22000"))
+        large = int(os.getenv("IMPLEMENT_CONTEXT_LARGE_TOKENS", "32000"))
+        ceiling = self.compiler.max_tokens
+        hits = list(seed.direct_hits) + list(supplemental_hits)
+        files = {
+            (str(hit.metadata.get("repo") or ""), str(hit.metadata.get("relative_path") or ""))
+            for hit in hits
+            if hit.metadata.get("relative_path")
+        }
+        repos = {repo for repo, _rel in files if repo}
+        use_large = len(repos) >= 2 or len(files) >= 5 or len(query) > 3000
+        return max(6000, min(ceiling, large if use_large else base))
+
+    @staticmethod
+    def _normalise_mode(mode: str) -> str:
+        # `guided` is retained only as a compatibility alias for older clients.
+        if mode == "guided":
+            return "implement"
+        if mode not in {"chat", "implement"}:
             raise ValueError(f"Unsupported chat mode: {mode}")
+        return mode
+
+    def _prepare_answer(self, conversation_id: str, user_text: str, mode: str = "chat"):
+        mode = self._normalise_mode(mode)
         self.conversations.append(conversation_id, "user", user_text)
-        purpose = "implementation" if mode == "guided" else "answer"
+        purpose = "implementation" if mode == "implement" else "answer"
         context = self.compile_context(user_text, conversation_id, agentic=True, purpose=purpose)
         self.compiler.write_debug_snapshot(context)
         retrieval_rules = (
@@ -213,11 +366,10 @@ class ProjectAssistant:
         system = (
             self._system_prompt()
             + "\n\n" + READ_ONLY_PROJECT_INTELLIGENCE
-            + "\n\n" + APPROVAL_SEMANTICS
             + "\n\n" + retrieval_rules
         )
-        if mode == "guided":
-            system += "\n\n" + GUIDED_IMPLEMENTATION
+        if mode == "implement":
+            system += "\n\n" + IMPLEMENT_MODE
         user = f"{context.text}\n\n## CURRENT USER REQUEST\n\n{user_text}"
         return context, system, user
 

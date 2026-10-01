@@ -167,6 +167,20 @@ class CoreTests(unittest.TestCase):
             self.assertEqual(recovered.title, "Recover me")
             self.assertEqual(store.entries(conv.id)[0].body, "still here")
 
+    def test_implementation_recent_context_filters_legacy_approval_chatter(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = ConversationStore(Path(tmp))
+            conv = store.create("Workflow")
+            store.append(conv.id, "user", "Add certificate renewal support")
+            store.append(conv.id, "assistant", "I will do step 1. Waiting for approval.")
+            store.append(conv.id, "user", "Approved — proceed with the latest proposed action.")
+            store.append(conv.id, "assistant", "The renewal code lives in certs.py and calls Venafi.")
+            recent = store.recent_substantive_text(conv.id, max_chars=8000, max_entries=6)
+            self.assertIn("Add certificate renewal support", recent)
+            self.assertIn("The renewal code lives in certs.py", recent)
+            self.assertNotIn("Approved — proceed", recent)
+            self.assertNotIn("Waiting for approval", recent)
+
     def test_conversation_rejects_none_entry_without_corrupting_file(self):
         with tempfile.TemporaryDirectory() as tmp:
             store = ConversationStore(Path(tmp))
@@ -444,7 +458,7 @@ class WebFoundationTests(unittest.TestCase):
     def test_api_app_imports_without_initialising_rag(self):
         from project_assistant.api.app import app
 
-        self.assertEqual(app.version, "0.8.16")
+        self.assertEqual(app.version, "0.8.18")
 
     def test_portkey_url_is_explicit_and_does_not_default_public(self):
         from project_assistant.config import PortkeySettings
@@ -462,7 +476,7 @@ class WebFoundationTests(unittest.TestCase):
         response = client.get("/api/projects", headers={"x-project-assistant-token": API_TOKEN})
         self.assertEqual(response.status_code, 200)
 
-    def test_guided_public_api_is_read_only_for_source_repositories(self):
+    def test_implement_public_api_is_read_only_for_source_repositories(self):
         from project_assistant.api.app import app
 
         paths = {route.path for route in app.routes}
@@ -1129,7 +1143,7 @@ class MultiRoundRetrievalTests(unittest.TestCase):
         self.assertIn("Git not applicable", model.user)
         self.assertIn("not responsible for staging, hashing or applying", model.system)
 
-    def test_guided_implementation_requires_live_file_oriented_context_and_has_no_mutation_role(self):
+    def test_implement_retrieval_requires_complete_live_file_oriented_context_and_has_no_mutation_role(self):
         from project_assistant.retrieval_agent import RetrievalAgent
 
         class FakeModel:
@@ -1151,16 +1165,16 @@ class MultiRoundRetrievalTests(unittest.TestCase):
 
         model = FakeModel()
         agent = RetrievalAgent(model, FakeToolkit())  # type: ignore[arg-type]
-        agent.plan_and_retrieve("implement the next step", "recent plan", [], [], purpose="implementation")
-        self.assertIn("GUIDED-IMPLEMENTATION RULES", model.system)
+        agent.plan_and_retrieve("implement the feature", "recent context", [], [], purpose="implementation", max_rounds=2, max_actions=10)
+        self.assertIn("IMPLEMENT-MODE RULES", model.system)
         self.assertIn("read all tightly coupled targets live", model.system.lower())
         self.assertIn("full requested feature/fix/playbook change", model.system)
-        self.assertIn("read the tightly coupled target", model.user)
+        self.assertIn("broad/batched retrieval", model.user)
         self.assertIn("HEAD=abc123", model.user)
 
 
-class GuidedImplementationTests(unittest.TestCase):
-    def test_guided_mode_adds_adaptive_copy_paste_contract_and_implementation_retrieval(self):
+class ImplementModeTests(unittest.TestCase):
+    def test_implement_mode_adds_direct_copy_paste_contract_and_implementation_retrieval(self):
         import sys
         import types
         from types import SimpleNamespace
@@ -1175,7 +1189,7 @@ class GuidedImplementationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             store = ConversationStore(root / ".assistant/conversations")
-            conv = store.create("Guided change")
+            conv = store.create("Implement change")
             assistant = object.__new__(ProjectAssistant)
             assistant.project_dir = root
             assistant.conversations = store
@@ -1187,17 +1201,44 @@ class GuidedImplementationTests(unittest.TestCase):
                 return SimpleNamespace(text="live target source")
             assistant.compile_context = compile_context
 
-            _context, system, user = assistant._prepare_answer(conv.id, "Implement the feature", mode="guided")
+            _context, system, user = assistant._prepare_answer(conv.id, "Implement the feature", mode="implement")
             self.assertEqual(seen.get("purpose"), "implementation")
-            self.assertIn("GUIDED IMPLEMENTATION MODE", system)
-            self.assertIn("completing the requested change end-to-end", system)
-            self.assertIn("default to completing the requested change end-to-end", system)
-            self.assertIn("proceed directly to complete copy-pasteable implementation code", system)
-            self.assertIn("Do NOT invent a step-by-step workflow", system)
+            self.assertIn("IMPLEMENT MODE", system)
+            self.assertIn("DO THE WORK in this response", system)
+            self.assertIn("Do not stop at a plan", system)
+            self.assertIn("copy/paste into their repository is the approval boundary", system)
+            self.assertIn("Do not ask for confirmation", system)
             self.assertIn("Repository: <registered repository name>", system)
             self.assertIn('Never use placeholders such as "..."', system)
             self.assertIn("live target source", user)
             self.assertEqual(store.entries(conv.id)[-1].body, "Implement the feature")
+
+    def test_legacy_guided_mode_normalises_to_implement_without_approval_semantics(self):
+        import sys
+        import types
+        from types import SimpleNamespace
+        fake_chroma = types.ModuleType("langchain_chroma")
+        fake_chroma.Chroma = object
+        fake_docs = types.ModuleType("langchain_core.documents")
+        fake_docs.Document = object
+        fake_fitz = types.ModuleType("fitz")
+        with patch.dict(sys.modules, {"langchain_chroma": fake_chroma, "langchain_core.documents": fake_docs, "fitz": fake_fitz}):
+            from project_assistant.assistant import ProjectAssistant
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            store = ConversationStore(root / ".assistant/conversations")
+            conv = store.create("Legacy alias")
+            assistant = object.__new__(ProjectAssistant)
+            assistant.project_dir = root
+            assistant.conversations = store
+            assistant._system_prompt = lambda: "You are a senior software engineer."
+            assistant.compiler = SimpleNamespace(write_debug_snapshot=lambda context: root / ".assistant/context.md")
+            assistant.compile_context = lambda query, conversation_id, **kwargs: SimpleNamespace(text="live source")
+            _context, system, _user = assistant._prepare_answer(conv.id, "Implement it", mode="guided")
+            self.assertIn("IMPLEMENT MODE", system)
+            self.assertNotIn("APPROVAL BUTTON SEMANTICS", system)
+            self.assertNotIn("Approved — proceed", system)
 
     def test_invalid_chat_mode_is_rejected_before_persisting_user_turn(self):
         import sys
@@ -1219,6 +1260,94 @@ class GuidedImplementationTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 assistant._prepare_answer(conv.id, "do it", mode="handoff")
             self.assertEqual(store.entries(conv.id), [])
+
+
+class DirectImplementWorkflowRegressionTests(unittest.TestCase):
+    def test_user_facing_ui_exposes_implement_not_guided_or_approve(self):
+        repo_root = Path(__file__).resolve().parents[1]
+        page = (repo_root / "web/src/app/page.tsx").read_text(encoding="utf-8")
+        self.assertIn(">Implement</button>", page)
+        self.assertNotIn(">Guided implementation</button>", page)
+        self.assertNotIn('className="btn approve"', page)
+        self.assertNotIn("approveLatest", page)
+        self.assertNotIn("Approved — proceed", page)
+
+    def test_active_assistant_has_no_approval_turn_state_machine(self):
+        repo_root = Path(__file__).resolve().parents[1]
+        assistant_source = (repo_root / "src/project_assistant/assistant.py").read_text(encoding="utf-8")
+        self.assertIn("IMPLEMENT MODE — COMPLETE HUMAN-APPLIED IMPLEMENTATION", assistant_source)
+        self.assertNotIn("APPROVAL_SEMANTICS", assistant_source)
+        self.assertNotIn("APPROVAL BUTTON SEMANTICS", assistant_source)
+        self.assertNotIn("Approved — proceed", assistant_source)
+        self.assertIn("Do not stop at a plan, proposal, outline, approval checkpoint", assistant_source)
+
+    def test_implement_fast_path_skips_planner_when_live_target_is_found(self):
+        import sys
+        import types
+        from types import SimpleNamespace
+        fake_chroma = types.ModuleType("langchain_chroma")
+        fake_chroma.Chroma = object
+        fake_docs = types.ModuleType("langchain_core.documents")
+        fake_docs.Document = object
+        fake_fitz = types.ModuleType("fitz")
+        with patch.dict(sys.modules, {"langchain_chroma": fake_chroma, "langchain_core.documents": fake_docs, "fitz": fake_fitz}):
+            from project_assistant.assistant import ProjectAssistant
+        from project_assistant.retrieval_types import SearchHit
+
+        seed_hit = SearchHit("snippet", {"repo": "repo", "relative_path": "src/app.py", "start_line": 10, "end_line": 20}, 1.0, ("lexical",))
+        live_hit = SearchHit("def work():\n    pass", {"repo": "repo", "relative_path": "src/app.py", "start_line": 1, "end_line": 2}, 1.0, ("live-read",))
+        seed = SimpleNamespace(initial_hits=(seed_hit,), direct_hits=(seed_hit,), routes=(), graph_hits=(), warnings=(), queries=("build it",))
+        planner_calls = []
+
+        class Toolkit:
+            def source_names(self):
+                return ("repo",)
+            def execute(self, action, limit=12):
+                return [live_hit]
+
+        assistant = object.__new__(ProjectAssistant)
+        assistant.conversations = SimpleNamespace(recent_substantive_text=lambda *args, **kwargs: "recent")
+        assistant.compiler = SimpleNamespace(
+            max_tokens=48000,
+            initial_retrieval=lambda *args, **kwargs: seed,
+            compile=lambda *args, **kwargs: SimpleNamespace(),
+        )
+        assistant.retrieval_agent = SimpleNamespace(
+            toolkit=Toolkit(),
+            plan_and_retrieve=lambda *args, **kwargs: planner_calls.append(kwargs),
+        )
+        assistant.compile_context("build it", purpose="implementation")
+        self.assertEqual(planner_calls, [])
+
+    def test_implement_external_request_uses_one_fallback_planner_round(self):
+        import sys
+        import types
+        from types import SimpleNamespace
+        fake_chroma = types.ModuleType("langchain_chroma")
+        fake_chroma.Chroma = object
+        fake_docs = types.ModuleType("langchain_core.documents")
+        fake_docs.Document = object
+        fake_fitz = types.ModuleType("fitz")
+        with patch.dict(sys.modules, {"langchain_chroma": fake_chroma, "langchain_core.documents": fake_docs, "fitz": fake_fitz}):
+            from project_assistant.assistant import ProjectAssistant
+
+        seed = SimpleNamespace(initial_hits=(), direct_hits=(), routes=(), graph_hits=(), warnings=(), queries=("search confluence",))
+        seen = {}
+        assistant = object.__new__(ProjectAssistant)
+        assistant.conversations = SimpleNamespace(recent_substantive_text=lambda *args, **kwargs: "")
+        assistant.compiler = SimpleNamespace(
+            max_tokens=48000,
+            initial_retrieval=lambda *args, **kwargs: seed,
+            compile=lambda *args, **kwargs: SimpleNamespace(),
+        )
+        assistant.retrieval_agent = SimpleNamespace(
+            toolkit=SimpleNamespace(source_names=lambda: (), execute=lambda *args, **kwargs: []),
+            plan_and_retrieve=lambda *args, **kwargs: (seen.update(kwargs) or SimpleNamespace(hits=(), actions=(), warnings=())),
+        )
+        assistant.compile_context("check Confluence for the design", purpose="implementation")
+        self.assertEqual(seen["max_rounds"], 1)
+        self.assertEqual(seen["max_actions"], 8)
+        self.assertEqual(seen["purpose"], "implementation")
 
 
 class GitStateRefreshTests(unittest.TestCase):

@@ -1,4 +1,4 @@
-# Local Project Assistant — v0.8.16
+# Local Project Assistant — v0.8.18
 
 Project Assistant recreates the useful parts of the enterprise ChatGPT browser experience locally while using approved Portkey routes for GPT-5.6 inference and embeddings. It keeps persistent project conversations, indexes multiple repositories, compiles high-signal project context, maintains consolidated user/project memory, and can produce source-grounded **copy-pasteable implementation code** without writing to registered source repositories itself.
 
@@ -19,15 +19,27 @@ Registered source repositories remain read-only to Project Assistant. It does no
 
 ## User guide
 
-For installation, environment variables, project/source management, **guided implementation**, conversation consolidation and memory locations, MCP configuration/authentication, the complete CLI/API reference, persistent-state layout and troubleshooting, see **[`docs/USER_GUIDE.md`](docs/USER_GUIDE.md)**.
+For installation, environment variables, project/source management, **Implement mode**, conversation consolidation and memory locations, MCP configuration/authentication, the complete CLI/API reference, persistent-state layout and troubleshooting, see **[`docs/USER_GUIDE.md`](docs/USER_GUIDE.md)**.
+
+## v0.8.18 — Implement fast path
+
+v0.8.18 removes most agentic orchestration from ordinary coding turns. **Implement** now runs deterministic hybrid retrieval first, live-reads the most likely target files directly, and goes straight to GPT-5.6 when those reads provide usable implementation evidence. A GPT retrieval-planner call is now a fallback rather than a mandatory pre-answer step; external/live requests such as Atlassian/CEB/Zowe can still use one fallback round.
+
+Implement-mode conversation context is intentionally smaller and cleaner: by default only the last six substantive user/assistant entries (up to 8,000 characters) are included, and short legacy approval/continuation chatter is filtered. Raw historical conversation RAG is excluded from normal implementation requests unless the user explicitly asks to recall prior chat history.
+
+Compiled implementation context is adaptive rather than always allowing the full 48k-token ceiling: ordinary changes default to about **22k tokens**, while larger cross-repo/multi-file work can grow to about **32k tokens**. General Chat keeps the broader context/retrieval behaviour.
+
+## v0.8.17 — Direct Implement mode
+
+v0.8.17 removes the staged Guided/Approve interaction model from normal coding. The browser now has **Chat** and **Implement** only. Implement mode investigates autonomously, uses broader batched retrieval with at most two planner rounds by default, and produces the complete requested copy-pasteable change in the current response whenever practical. The user's copy/paste is the write/approval boundary; ordinary code generation has no approval or continuation checkpoint. The API still accepts the old `guided` mode as a compatibility alias, but it is normalised immediately to Implement mode and is not exposed in the UI.
 
 ## v0.8.16 — Workflow consistency + indexing progress/performance
 
-v0.8.16 fixes two issues found by auditing the packaged v0.8.15 source rather than relying on intended behaviour. Guided mode now uses the same end-to-end delivery contract in the system prompt, retrieval planner, CLI help and browser copy: clear implementation requests should normally produce the complete requested feature/fix/playbook change in the current response, without invented micro-steps or routine approval pauses. The browser version badge is now read from the live backend status instead of being hard-coded.
+v0.8.16 improved the then-current guided workflow consistency and indexing diagnostics. It also made the browser version badge read from the live backend instead of being hard-coded.
 
-Indexing now reports real `processed / total` progress and explicit scanning/indexing/finalising phases. Embedding HTTP calls have a configurable timeout (`PORTKEY_EMBEDDING_TIMEOUT_SECONDS`, default 60 seconds) so one stalled gateway request cannot leave a run apparently frozen forever. Successful indexes persist `size + mtime_ns` file signatures, allowing later unchanged-file checks to avoid rereading/SHA-256 hashing every file; Git-backed registered sources can also use the previously indexed commit plus current Git changes to migrate to this fast path without hashing every tracked file.
+Indexing reports real `processed / total` progress and explicit scanning/indexing/finalising phases. Embedding HTTP calls have a configurable timeout (`PORTKEY_EMBEDDING_TIMEOUT_SECONDS`, default 60 seconds) so one stalled gateway request cannot leave a run apparently frozen forever. Successful indexes persist `size + mtime_ns` file signatures, allowing later unchanged-file checks to avoid rereading/SHA-256 hashing every file; Git-backed registered sources can also use the previously indexed commit plus current Git changes to migrate to this fast path without hashing every tracked file.
 
-## v0.8.15 — Adaptive guided implementation units
+## v0.8.15 — Adaptive Implement mode units
 
 v0.8.15 removes the overly granular guided-workflow rule that forced non-trivial work into `2–6 small steps` and then emitted only one tiny step per approval. Guided mode now optimises for the **largest coherent, reviewable implementation unit**: typically a complete feature slice, whole file change, complete playbook/set of related playbooks, or a tightly coupled 2–3 file change including required tests/configuration.
 
@@ -53,13 +65,12 @@ v0.8.12 removes two long-conversation latency traps from the chat UI. The final 
 
 Conversation navigation is also polished in v0.8.12: selecting a conversation jumps directly to its latest message, and user prompts use a distinct blue-toned, right-aligned bubble so prompt/assistant boundaries are easy to scan in long chats.
 
-Historical message components are content-memoised, while the existing off-screen `content-visibility` optimisation remains in place, reducing later reload/layout work for large conversations. Conversation concurrency and the scoped Approve button from v0.8.10 remain unchanged.
+Historical message components are content-memoised, while the existing off-screen `content-visibility` optimisation remains in place, reducing later reload/layout work for large conversations. Conversation concurrency remains unchanged; ordinary code generation no longer has an approval button or approval-turn workflow.
 
 ## v0.8.10 — Concurrent conversations + scoped approval
 
 v0.8.10 lets separate conversations run at the same time without sharing one global browser `busy`/stream buffer. Each conversation keeps independent streaming text, retrieval context and errors, while the backend enforces one active response per individual conversation so Markdown turns cannot interleave.
 
-The composer also adds an **Approve** button. It sends an auditable approval turn for the latest assistant-proposed action and is deliberately scoped to that proposal only; it is not permanent permission and does not change the read-only source/MCP safety boundaries.
 
 No reindex is required for this release.
 
@@ -76,11 +87,11 @@ v0.8.9 hardens the Markdown conversation path after a failed stream/write could 
 
 No reindex is required for this release.
 
-## v0.8.8 — Zowe MCP + MCP retrieval + guided implementation + memory
+## v0.8.8 — Zowe MCP + MCP retrieval + Implement mode + memory
 
 v0.8.8 keeps the three active feature strands together and adds the first built-in read-only Zowe MCP server:
 
-- **Guided implementation** from the v0.8.0.03 branch replaces the OpenCode handoff workflow.
+- **Implement mode** from the v0.8.0.03 branch replaces the OpenCode handoff workflow.
 - **Conversation consolidation + user memory** remain from the memory-enabled v0.8.0 branch.
 - **Authenticated MCP connectivity + locally approved read-only MCP retrieval** build on v0.8.2–v0.8.7.
 - **Built-in Zowe MCP** exposes a deliberately small fixed set of read-only z/OS functions through the already-configured local Zowe CLI.
@@ -88,9 +99,9 @@ v0.8.8 keeps the three active feature strands together and adds the first built-
 The composer now has two modes:
 
 - **Chat** — project questions, debugging, architecture, design and investigation.
-- **Guided implementation** — source-grounded coding with a human approval/write boundary.
+- **Implement mode** — source-grounded coding with a human approval/write boundary.
 
-For a non-trivial coding request, Guided implementation:
+For a non-trivial coding request, Implement mode:
 
 1. performs conversation-aware RAG plus bounded live read-only exploration;
 2. chooses the largest coherent reviewable unit instead of an arbitrary number of small steps;
@@ -129,7 +140,7 @@ FastAPI 127.0.0.1:8000
   +-- SQLite FTS5 exact/lexical retrieval
   +-- deterministic knowledge graph
   +-- Chroma semantic retrieval
-  +-- bounded multi-round retrieval planner
+  +-- deterministic Implement fast path + bounded retrieval-planner fallback
   +-- controlled live read-only filesystem/Git tools
   +-- MCP registry + OAuth/Keychain + capability discovery
   +-- local per-server MCP tool allowlists + retrieval evidence
@@ -142,7 +153,7 @@ Configured enterprise Portkey gateway
 
 ## Retrieval
 
-Normal Chat and Guided implementation automatically perform conversation-aware retrieval. **Compile context** remains an inspection/debugging feature and is not required before asking a question.
+Normal Chat and Implement mode automatically perform conversation-aware retrieval. **Compile context** remains an inspection/debugging feature and is not required before asking a question.
 
 ```text
 current request + recent conversation
@@ -168,7 +179,7 @@ bounded GPT retrieval planner
 compiled high-signal project + MCP context
 ```
 
-Guided implementation has a stronger retrieval contract: likely target files must be located and read live where possible before the model declares context sufficient for copy-paste code generation. Short continuation turns such as `yes`, `next`, or `do step 2` use recent conversation state to recover the target files.
+Implement mode has a stronger retrieval contract: likely target files must be located and read live where possible before the model declares context sufficient for copy-paste code generation. Short continuation turns such as `yes`, `next`, or `do step 2` use recent conversation state to recover the target files.
 
 ## Conversation consolidation and user memory
 
@@ -295,7 +306,7 @@ project-assistant --project /path/to/project index
 project-assistant --project /path/to/project consolidate
 project-assistant --project /path/to/project chat-new "Investigation"
 project-assistant --project /path/to/project chat <conversation-id> "Why is this failing?"
-project-assistant --project /path/to/project chat <conversation-id> "Implement the next step" --guided
+project-assistant --project /path/to/project chat <conversation-id> "Implement the certificate renewal feature" --implement
 project-assistant --project /path/to/project context "How does asset rebuild flow across repos?"
 
 project-assistant mcp-list
@@ -306,3 +317,4 @@ project-assistant mcp-allow atlassian getAccessibleAtlassianResources discover e
 ```
 
 The complete command-by-command reference is in [`docs/USER_GUIDE.md`](docs/USER_GUIDE.md#11-complete-cli-reference).
+

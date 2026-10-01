@@ -185,7 +185,7 @@ select.input { appearance: auto; }
 .message-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 8px; }
 .message-heading .message-label { margin-bottom: 0; }
 
-/* Guided implementation: copyable source blocks. */
+/* Implement mode: copyable source blocks. */
 .code-frame { margin: 12px 0 16px; border: 1px solid var(--line); border-radius: 9px; overflow: hidden; background: #090b0f; }
 .code-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 6px 9px; border-bottom: 1px solid var(--line); background: #11141a; color: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 10px; text-transform: lowercase; }
 .code-copy { border: 1px solid var(--line); background: var(--panel-2); color: var(--text); border-radius: 6px; padding: 4px 7px; font-size: 11px; }
@@ -193,11 +193,4 @@ select.input { appearance: auto; }
 .markdown .code-frame pre { margin: 0; border: 0; border-radius: 0; }
 
 /* Conversation concurrency + explicit approval. */
-.btn.approve {
-  border-color: #6f7bb8;
-  color: #d9ddff;
-  background: #22283b;
-  font-weight: 650;
-}
-.btn.approve:hover:not(:disabled) { border-color: #909be0; }
 .nav-item.running { border-left: 2px solid var(--accent); }

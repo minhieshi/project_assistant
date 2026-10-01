@@ -1,6 +1,6 @@
-# Project Assistant v0.8.16 — User Guide
+# Project Assistant v0.8.18 — User Guide
 
-This guide describes the behaviour that is actually implemented in **v0.8.16**. It covers setup, projects and source repositories, indexing and retrieval, conversation persistence and consolidation, local state, MCP credential storage, the CLI, the local API, and troubleshooting.
+This guide describes the behaviour that is actually implemented in **v0.8.18**. The coding workflow is now intentionally direct: **Chat** for investigation and **Implement** for autonomous investigation plus complete human-applied code output; ordinary code generation has no approval checkpoint. It covers setup, projects and source repositories, indexing and retrieval, conversation persistence and consolidation, local state, MCP credential storage, the CLI, the local API, and troubleshooting.
 
 > **MCP status:** v0.8.8 connects authenticated MCP servers to the normal retrieval planner through an explicit local per-server tool allowlist. Only tools you approve in the Connections tab or with `mcp-allow` are exposed to chat retrieval. MCP tool descriptions, schemas and results are treated as untrusted external evidence, and obvious mutation-oriented tool names are blocked locally even if the server labels them read-only.
 
@@ -11,10 +11,10 @@ Project Assistant is a local-first, read-only project intelligence layer. It is 
 - keep project conversations as local Markdown;
 - index multiple source repositories/directories;
 - combine exact/lexical retrieval, Chroma semantic retrieval and a deterministic knowledge graph;
-- use a bounded retrieval planner for additional live read-only file/Git inspection;
+- use deterministic retrieval/direct live reads for Implement mode, with the bounded planner only as a fallback;
 - compile high-signal context for GPT-5.6 through the configured Portkey gateway;
 - maintain consolidated long-term conversation memory;
-- author source-grounded copy-pasteable code/config/tests in Guided implementation mode while keeping source writes under human control.
+- author source-grounded copy-pasteable code/config/tests in Implement mode mode while keeping source writes under human control.
 
 Its normal execution path does **not** edit registered source repositories or expose an arbitrary shell.
 
@@ -121,9 +121,16 @@ project-assistant chat-test
 | Variable | Purpose | Default |
 |---|---|---|
 | `CONTEXT_MAX_TOKENS` | Maximum compiled-context budget | `48000` |
-| `RETRIEVAL_AGENT_ENABLED` | Enable bounded multi-round retrieval planner | `1` |
+| `RETRIEVAL_AGENT_ENABLED` | Enable deterministic Implement fast path + bounded retrieval-planner fallback | `1` |
 | `RETRIEVAL_AGENT_MAX_ACTIONS` | Maximum tool actions used by the retrieval planner | `6` |
-| `RETRIEVAL_AGENT_MAX_ROUNDS` | Maximum retrieval-planning rounds | `3` |
+| `RETRIEVAL_AGENT_MAX_ROUNDS` | Maximum retrieval-planning rounds for normal Chat | `3` |
+| `IMPLEMENT_FAST_READ_FILES` | Maximum likely target files live-read directly before any Implement planner fallback | `6` |
+| `IMPLEMENT_RECENT_MAX_CHARS` | Maximum recent substantive conversation text supplied to Implement mode | `8000` |
+| `IMPLEMENT_RECENT_MAX_ENTRIES` | Maximum recent substantive user/assistant entries supplied to Implement mode | `6` |
+| `IMPLEMENT_CONTEXT_TOKENS` | Normal Implement-mode compiled-context budget | `22000` |
+| `IMPLEMENT_CONTEXT_LARGE_TOKENS` | Larger cross-repo/multi-file Implement context budget | `32000` |
+| `RETRIEVAL_IMPLEMENT_FALLBACK_MAX_ACTIONS` | Maximum actions in the optional Implement planner fallback | `8` |
+| `RETRIEVAL_IMPLEMENT_FALLBACK_MAX_ROUNDS` | Maximum optional Implement planner fallback rounds | `1` |
 
 Boolean settings treat `0`, `false`, `no`, and `off` as disabled.
 
@@ -289,7 +296,7 @@ Indexing maintains several complementary stores:
 .assistant/index_status.json        latest indexing status
 ```
 
-Incremental indexing avoids re-embedding unchanged content. v0.8.16 also persists each indexed file's `size + mtime_ns`, so normal unchanged checks do not reread/SHA-256 hash every file on every run. Registered Git sources can use the previously indexed commit plus current committed/staged/unstaged/untracked changes to migrate older manifests to this fast path without hashing every tracked file. Git branch/HEAD metadata can still be refreshed independently of embeddings.
+Incremental indexing avoids re-embedding unchanged content. v0.8.18 also persists each indexed file's `size + mtime_ns`, so normal unchanged checks do not reread/SHA-256 hash every file on every run. Registered Git sources can use the previously indexed commit plus current committed/staged/unstaged/untracked changes to migrate older manifests to this fast path without hashing every tracked file. Git branch/HEAD metadata can still be refreshed independently of embeddings.
 
 Normal chat/context retrieval can combine:
 
@@ -332,18 +339,21 @@ Security/egress events can be recorded in:
 .assistant/security_events.log
 ```
 
-### Guided implementation
+### Implement mode
 
-Use Guided implementation when you want Project Assistant to produce code for you to apply manually. It uses the same project RAG/live-read system as normal chat, but the default delivery contract is now **complete the requested change in the current response whenever practical**.
+Use Implement mode when you want Project Assistant to produce code for you to apply manually. It uses the same project RAG/live-read system as normal chat, but the default delivery contract is now **complete the requested change in the current response whenever practical**.
 
 For a clear implementation request:
 
-1. the retrieval planner locates and live-reads all tightly coupled repositories/files/integration/config/test artefacts needed for the requested behaviour;
-2. it retrieves enough context for the **full requested feature/fix/playbook change**, not merely the next small step;
-3. Project Assistant proceeds directly to complete copy-pasteable implementation code instead of inserting a routine planning/approval pause;
-4. imports, helpers, call sites, configuration, tests and documentation required for the same behaviour remain together;
-5. it stops before implementation only when a material ambiguity would produce incompatible designs, required source cannot be retrieved, or the request is exceptionally large;
-6. after the code it summarises the change and provides validation commands/checks.
+1. deterministic hybrid RAG identifies likely repositories/files without a GPT planning call;
+2. Project Assistant directly live-reads the most likely target files in a batch-oriented fast path;
+3. when those live reads provide usable evidence, GPT-5.6 immediately produces the complete copy-pasteable implementation;
+4. only when local evidence is inadequate, or the request explicitly needs external/live context such as Atlassian/CEB/Zowe, one bounded retrieval-planner fallback round is used;
+5. imports, helpers, call sites, configuration, tests and documentation required for the same behaviour remain together;
+6. it stops before implementation only when a material ambiguity would produce incompatible designs, required source cannot be retrieved, or the request is exceptionally large;
+7. after the code it summarises the change and provides validation commands/checks.
+
+Implement mode also uses a deliberately smaller conversation window (normally the last 2–3 substantive exchanges), filters short legacy approval/continuation chatter, and does not pull raw historical conversation RAG unless the user explicitly asks to recall earlier chat. Its context budget is adaptive: about 22k tokens for ordinary work and about 32k for larger cross-repo/multi-file changes by default.
 
 The active runtime, retrieval planner, CLI help and browser guidance all use this same contract. Older user-memory text referring to `smallest viable implementation` or incremental micro-steps does not override it.
 
@@ -356,26 +366,10 @@ Action: Create file | Replace file | Replace function/class/section | Insert aft
 Why: <short explanation>
 ```
 
-Replacement code should be complete and copy-pasteable. Guided mode forbids placeholders such as `...`, `existing code`, `rest unchanged`, omitted imports or pseudo-code inside replacement blocks. Diffs are only produced when explicitly requested.
+Replacement code should be complete and copy-pasteable. Implement mode forbids placeholders such as `...`, `existing code`, `rest unchanged`, omitted imports or pseudo-code inside replacement blocks. Diffs are only produced when explicitly requested.
 
 The UI has **Copy response** on assistant/event messages and a **Copy** button on fenced code blocks.
 
-### Approve button
-
-The chat composer also has an **Approve** button. It is enabled only when the latest conversational turn is from the assistant and no response is already running in that conversation. Pressing it records a normal user turn equivalent to:
-
-```text
-Approved — proceed with the latest action or step you proposed.
-```
-
-Approval is intentionally narrow: it applies only to the latest assistant-proposed action in that conversation. It does not grant permanent permissions, expand MCP allowlists, allow writes, approve destructive operations, or authorise unrelated future work. If there is no pending proposed action, the assistant is instructed not to invent one.
-
-CLI example:
-
-```bash
-project-assistant --project ~/work/context-builder \
-  chat a1b2c3d4e5 "Implement the certificate renewal feature" --guided
-```
 
 ## 8. Conversation persistence
 
@@ -403,7 +397,7 @@ Why did this job fail?
 ...
 ```
 
-Guided implementation plans, confirmations, generated code and ordinary chat turns remain in the same conversation Markdown, so the project history stays readable without a database viewer.
+Implement-mode generated code and ordinary chat turns remain in the same conversation Markdown, so the project history stays readable without a database viewer.
 
 Conversation files use private file permissions.
 
@@ -1077,7 +1071,7 @@ project-assistant --project ~/work/context-builder chat-new "Certificate investi
 
 Prints the conversation ID and Markdown path.
 
-#### `chat CONVERSATION_ID MESSAGE [--guided]`
+#### `chat CONVERSATION_ID MESSAGE [--implement]`
 
 Append the user message, perform conversation-aware retrieval, call the chat model, append the assistant answer, and print the answer.
 
@@ -1088,14 +1082,14 @@ project-assistant --project ~/work/context-builder \
   chat a1b2c3d4e5 "Why is the certificate automation failing?"
 ```
 
-Guided implementation:
+Implement mode:
 
 ```bash
 project-assistant --project ~/work/context-builder \
-  chat a1b2c3d4e5 "Implement the certificate renewal feature" --guided
+  chat a1b2c3d4e5 "Implement the certificate renewal feature" --implement
 ```
 
-`--guided` switches retrieval purpose to `implementation`, requires stronger live-file grounding, and adds the adaptive coherent-unit copy-paste code contract to the model prompt. Quote the message in the shell when it contains spaces/shell metacharacters.
+`--implement` switches retrieval purpose to `implementation`, uses deterministic RAG plus direct live target-file reads first, and adds the direct complete-change copy-paste code contract to the model prompt. A retrieval-planner call is only used as a bounded fallback when local evidence is inadequate or external/live MCP context is needed. Ordinary implementation does not pause for approval or continuation turns. Quote the message in the shell when it contains spaces/shell metacharacters.
 
 #### `consolidate [--force]`
 
@@ -1235,7 +1229,7 @@ The stream request body is:
 }
 ```
 
-`mode` may be `chat` or `guided`. Guided mode uses implementation-specific live retrieval and the copy-paste code contract described above.
+`mode` may be `chat` or `implement` (`guided` is accepted only as a legacy alias). Implement mode uses implementation-specific live retrieval and the copy-paste code contract described above.
 
 ### Retrieval inspection
 
@@ -1500,7 +1494,7 @@ cd web
 npm run build
 ```
 
-## 18. Current v0.8.16 limitations / next layer
+## 18. Current v0.8.18 limitations / next layer
 
 Authenticated **tool-based** MCP retrieval is implemented. The remaining MCP work is narrower:
 

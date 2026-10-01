@@ -1,3 +1,28 @@
+# v0.8.18
+
+## 0.8.18 — Implement fast path and context cleanup
+
+- Makes deterministic hybrid RAG + direct live target-file reads the default Implement path.
+- Skips GPT retrieval-planner calls entirely for ordinary repo implementation when usable live targets are found.
+- Keeps one bounded planner fallback round for inadequate local evidence or explicit external/live MCP needs such as Atlassian/CEB/Zowe.
+- Limits Implement retrieval-query fanout to four queries and semantic embedding searches to two.
+- Adds compact `recent_substantive_text` conversation context (6 entries / 8k chars by default) and filters short legacy approval/continuation chatter.
+- Excludes raw historical conversation RAG from normal implementation requests unless explicit history recall is requested.
+- Adds adaptive Implement context budgets: 22k tokens normally, 32k for larger cross-repo/multi-file work, bounded by `CONTEXT_MAX_TOKENS`.
+- Preserves broader multi-round retrieval and larger context behaviour for normal Chat.
+
+# v0.8.17
+
+## 0.8.17 — Direct Implement mode
+
+- Replaces the user-facing Guided workflow with **Implement** mode.
+- Removes the ordinary chat **Approve** button and approval-turn prompt semantics; copy/paste is the code-write approval boundary.
+- Keeps `guided` only as a backwards-compatible API/CLI alias that normalises to Implement mode.
+- Implement mode no longer stops at plans/approval checkpoints when the request is sufficiently specified.
+- Uses broader batched implementation retrieval (10 actions/round, 2 rounds by default) to reduce repeated planner latency while still grounding multi-file changes.
+- Aligns browser, API, CLI, retrieval planner, memory guidance and documentation to the same direct workflow contract.
+- Adds regression tests that fail if staged approval semantics or the old user-facing guided mode return.
+
 # v0.8.16
 
 ## 0.8.16 — Workflow consistency + indexing progress/performance
